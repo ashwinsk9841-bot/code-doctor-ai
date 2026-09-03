@@ -207,6 +207,68 @@ class AnthropicProvider(AIProvider):
         return ProviderError(f"Anthropic API error: {msg}", "provider")
 
 
+class OpenCodeZenProvider(AIProvider):
+    """OpenCode Zen provider (free models like Big Pickle).
+
+    OpenCode Zen exposes an OpenAI-compatible chat completions endpoint, so this
+    reuses the ``openai`` SDK pointed at ``https://opencode.ai/zen/v1``. The
+    default model is the free **Big Pickle**; no paid credits are required.
+    """
+
+    provider_name = "opencode_zen"
+    DEFAULT_BASE_URL = "https://opencode.ai/zen/v1"
+    DEFAULT_MODEL = "big-pickle"
+
+    def __init__(self, api_key: str, model: str = "", base_url: str = ""):
+        if not api_key:
+            raise AuthenticationError("OpenCode Zen API key is required.")
+        self.api_key = api_key
+        self.model = model or self.DEFAULT_MODEL
+        self.base_url = base_url or self.DEFAULT_BASE_URL
+        try:
+            import openai
+        except ImportError:
+            raise ProviderError(
+                "The 'openai' package is not installed. Run: pip install openai",
+                "dependency",
+            )
+        self._openai = openai
+        self.client = openai.OpenAI(api_key=api_key, base_url=self.base_url)
+
+    def _normalize_model(self) -> str:
+        return self.model
+
+    def complete(self, system: str, user_message: str, max_tokens: int = 4000) -> str:
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            raise self._classify(e)
+
+    @staticmethod
+    def _classify(e: Exception) -> ProviderError:
+        msg = str(e)
+        code = getattr(getattr(e, "status_code", None), "code", None) or getattr(e, "status_code", None)
+        if code == 401 or "authentication" in msg.lower() or "invalid api key" in msg.lower():
+            return AuthenticationError()
+        if code == 402 or "insufficient_quota" in msg.lower() or "billing" in msg.lower() or "credit" in msg.lower():
+            return QuotaExceededError()
+        if code == 429 or "rate limit" in msg.lower():
+            return RateLimitedError()
+        if code == 404 or ("model" in msg.lower() and ("not found" in msg.lower() or "does not exist" in msg.lower() or "not_found" in msg.lower())):
+            return ModelUnavailableError()
+        if code == 403:
+            return ProviderError("AI provider rejected the request (403). Check permissions.", "provider")
+        return ProviderError(f"OpenCode Zen API error: {msg}", "provider")
+
+
 class OpenAIProvider(AIProvider):
     """OpenAI provider."""
 
@@ -278,17 +340,24 @@ def classify_provider_error(e: Exception) -> Tuple[str, str]:
     return f"AI provider error: {str(e)}", "provider"
 
 
-def create_ai_provider(provider_name: str, api_key: str, model: str, extra_key: str = "", extra_model: str = "") -> AIProvider:
-    """Factory. Falls back between anthropic/openai when 'auto' is used."""
+def create_ai_provider(provider_name: str, api_key: str, model: str, extra_key: str = "", extra_model: str = "", zen_key: str = "", zen_model: str = "", zen_base_url: str = "") -> AIProvider:
+    """Factory. Falls back between providers when 'auto' is used."""
     name = (provider_name or "auto").lower()
     if name == "auto":
+        if zen_key:
+            return OpenCodeZenProvider(zen_key, zen_model or model, zen_base_url)
         if api_key:
             return AnthropicProvider(api_key, model)
         if extra_key:
             return OpenAIProvider(extra_key, extra_model or model or "gpt-4o")
         raise AuthenticationError(
-            "No AI API key configured. Set AI_API_KEY or OPENAI_API_KEY in your .env file."
+            "No AI API key configured. Set OPENCODE_ZEN_API_KEY, AI_API_KEY or "
+            "OPENAI_API_KEY in your .env or Streamlit secrets."
         )
+    if name == "opencode_zen":
+        key = api_key or extra_key or zen_key
+        chosen_model = zen_model or extra_model or model or OpenCodeZenProvider.DEFAULT_MODEL
+        return OpenCodeZenProvider(key, chosen_model, zen_base_url)
     if name == "anthropic":
         key = api_key or extra_key
         return AnthropicProvider(key, model)

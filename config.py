@@ -24,7 +24,7 @@ class Config:
     """Application configuration"""
 
     # AI Provider Settings
-    AI_PROVIDER = _env("AI_PROVIDER", "anthropic")
+    AI_PROVIDER = _env("AI_PROVIDER", "opencode_zen")
     AI_API_KEY = _env("AI_API_KEY", "")
     AI_MODEL = _env("AI_MODEL", "")
 
@@ -32,10 +32,16 @@ class Config:
     OPENAI_API_KEY = _env("OPENAI_API_KEY", "")
     OPENAI_MODEL = _env("OPENAI_MODEL", "gpt-4o")
 
+    # OpenCode Zen Settings (free models like Big Pickle, default provider)
+    OPENCODE_ZEN_API_KEY = _env("OPENCODE_ZEN_API_KEY", "")
+    OPENCODE_ZEN_MODEL = _env("OPENCODE_ZEN_MODEL", "big-pickle")
+    OPENCODE_ZEN_BASE_URL = _env("OPENCODE_ZEN_BASE_URL", "https://opencode.ai/zen/v1")
+
     # Default models per provider (used when AI_MODEL / OPENAI_MODEL are empty)
     _DEFAULT_MODELS = {
         "anthropic": "claude-sonnet-4-20250514",
         "openai": "gpt-4o",
+        "opencode_zen": "big-pickle",
     }
 
     # Whether load_from_secrets() has already been called
@@ -66,6 +72,9 @@ class Config:
             "AI_MODEL": "AI_MODEL",
             "OPENAI_API_KEY": "OPENAI_API_KEY",
             "OPENAI_MODEL": "OPENAI_MODEL",
+            "OPENCODE_ZEN_API_KEY": "OPENCODE_ZEN_API_KEY",
+            "OPENCODE_ZEN_MODEL": "OPENCODE_ZEN_MODEL",
+            "OPENCODE_ZEN_BASE_URL": "OPENCODE_ZEN_BASE_URL",
         }
         for secret_key, attr in secret_map.items():
             try:
@@ -82,6 +91,9 @@ class Config:
         provider = (provider or cls.AI_PROVIDER).lower()
         if provider == "openai":
             return cls.OPENAI_MODEL or cls.AI_MODEL or cls._DEFAULT_MODELS.get("openai", "gpt-4o")
+        if provider == "opencode_zen":
+            return (cls.OPENCODE_ZEN_MODEL or cls.AI_MODEL
+                    or cls._DEFAULT_MODELS.get("opencode_zen", "big-pickle"))
         return cls.AI_MODEL or cls._DEFAULT_MODELS.get("anthropic", "claude-sonnet-4-20250514")
 
     # Application Settings
@@ -178,13 +190,16 @@ class Config:
         """Validate configuration.  Returns (is_valid, message)."""
         cls.load_from_secrets()
 
-        if cls.AI_PROVIDER not in ("anthropic", "openai", "auto"):
+        if cls.AI_PROVIDER not in ("anthropic", "openai", "opencode_zen", "auto"):
             return False, (
                 f"Unknown AI_PROVIDER '{cls.AI_PROVIDER}'. "
-                "Supported values: anthropic, openai, auto."
+                "Supported values: anthropic, openai, opencode_zen, auto."
             )
 
         provider = cls.AI_PROVIDER.lower()
+
+        if provider in ("opencode_zen", "auto") and cls.OPENCODE_ZEN_API_KEY:
+            return True, "Configuration valid."
 
         if provider in ("anthropic", "auto") and cls.AI_API_KEY:
             return True, "Configuration valid."
@@ -194,9 +209,9 @@ class Config:
 
         # No usable key found
         return False, (
-            "No API key configured. Add **AI_API_KEY** (for Anthropic) or "
-            "**OPENAI_API_KEY** (for OpenAI) to your Streamlit secrets "
-            "or to your local `.env` file."
+            "No API key configured. Add **OPENCODE_ZEN_API_KEY** (recommended, "
+            "free), **AI_API_KEY** (Anthropic), or **OPENAI_API_KEY** (OpenAI) "
+            "to your Streamlit secrets or to your local `.env` file."
         )
 
     @classmethod

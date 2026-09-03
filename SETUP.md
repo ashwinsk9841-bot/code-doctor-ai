@@ -4,8 +4,9 @@
 
 - **Python 3.10 or higher** (developed and tested against 3.14)
 - **pip** (Python package manager)
-- **API Key** (optional) from either:
-  - [Anthropic Console](https://console.anthropic.com/) (recommended)
+- **API Key** (optional) from any of:
+  - [OpenCode Zen](https://opencode.ai/auth) (recommended — **free**, e.g. Big Pickle)
+  - [Anthropic Console](https://console.anthropic.com/)
   - [OpenAI Platform](https://platform.openai.com/)
 
 > Without an API key the app still works — it performs static, security, and
@@ -29,6 +30,13 @@ cp .env.example .env
 ```
 
 Edit `.env` and add your API key:
+
+**For OpenCode Zen (free, default):**
+```env
+AI_PROVIDER=opencode_zen
+OPENCODE_ZEN_API_KEY=sk-zen-your-key-here
+OPENCODE_ZEN_MODEL=big-pickle
+```
 
 **For Anthropic (Claude):**
 ```env
@@ -165,6 +173,13 @@ CODE-DOCTOR-AI/
 
 ## API Key Setup
 
+### Getting an OpenCode Zen API Key (free, recommended)
+
+1. Go to [opencode.ai/auth](https://opencode.ai/auth)
+2. Sign up or log in
+3. Copy your API key (no credit card required; Big Pickle is free)
+4. Add to `.env` as `OPENCODE_ZEN_API_KEY`
+
 ### Getting an Anthropic API Key
 
 1. Go to [console.anthropic.com](https://console.anthropic.com/)
@@ -191,7 +206,14 @@ CODE-DOCTOR-AI/
    and paste TOML with your provider key:
 
 ```toml
-# Anthropic provider (either use this, or the OpenAI block below)
+# OpenCode Zen provider (free, recommended)
+AI_PROVIDER = "opencode_zen"
+OPENCODE_ZEN_API_KEY = "sk-zen-your-key-here"
+# OPENCODE_ZEN_MODEL = "big-pickle"
+```
+
+```toml
+# Anthropic provider (alternative)
 AI_PROVIDER = "anthropic"
 AI_API_KEY = "sk-ant-your-key-here"
 AI_MODEL = "claude-sonnet-4-20250514"
@@ -204,8 +226,9 @@ OPENAI_API_KEY = "sk-your-openai-key-here"
 OPENAI_MODEL = "gpt-4o"
 ```
 
-> **Only one provider key is required.** If you set both keys, set
-> `AI_PROVIDER = "auto"` to let the app pick. The app reads these secrets on
+> **Only one provider key is required.** If you set more than one, set
+> `AI_PROVIDER = "auto"` to let the app pick (OpenCode Zen first, then
+> Anthropic, then OpenAI). The app reads these secrets on
 > startup via `Config.load_from_secrets()`. Without any key, the deployed app
 > still runs static/security/dependency scans.
 

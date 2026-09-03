@@ -79,15 +79,29 @@ def build_ai_provider(enable_ai: bool):
     model = Config.effective_model(provider)
     extra_key = Config.OPENAI_API_KEY
     extra_model = Config.effective_model("openai")
+    zen_key = Config.OPENCODE_ZEN_API_KEY
+    zen_model = Config.OPENCODE_ZEN_MODEL
+    zen_base_url = Config.OPENCODE_ZEN_BASE_URL
 
-    # Auto-fallback: if primary provider has no key, try the other
-    if provider == "anthropic" and not api_key:
-        if extra_key:
+    # Auto-fallback: if primary provider has no key, try another one
+    if provider == "opencode_zen" and not zen_key:
+        if api_key:
+            provider = "anthropic"
+        elif extra_key:
             provider = "openai"
-        elif not extra_key:
+        else:
+            return None
+    elif provider == "anthropic" and not api_key:
+        if zen_key:
+            provider = "opencode_zen"
+        elif extra_key:
+            provider = "openai"
+        else:
             return None
     elif provider == "openai" and not extra_key:
-        if api_key:
+        if zen_key:
+            provider = "opencode_zen"
+        elif api_key:
             provider = "anthropic"
         else:
             return None
@@ -96,6 +110,7 @@ def build_ai_provider(enable_ai: bool):
         return create_ai_provider(
             provider, api_key, model,
             extra_key=extra_key, extra_model=extra_model,
+            zen_key=zen_key, zen_model=zen_model, zen_base_url=zen_base_url,
         )
     except Exception as e:
         msg, kind = classify_provider_error(e)
@@ -114,13 +129,14 @@ def setup_sidebar():
         st.markdown("##### ⚙️ Configuration")
         Config.load_from_secrets()
         Config.validate()
-        has_key = bool(Config.AI_API_KEY or Config.OPENAI_API_KEY)
+        has_key = bool(Config.AI_API_KEY or Config.OPENAI_API_KEY or Config.OPENCODE_ZEN_API_KEY)
 
         if not has_key:
             st.warning(
                 "No AI API key found. Static, security & dependency analysis "
-                "will run locally. Add `AI_API_KEY` or `OPENAI_API_KEY` to "
-                "your Streamlit secrets (or `.env` locally) to enable AI code review."
+                "will run locally. Add `OPENCODE_ZEN_API_KEY` (free), "
+                "`AI_API_KEY`, or `OPENAI_API_KEY` to your Streamlit secrets "
+                "(or `.env` locally) to enable AI code review."
             )
 
         enable_ai = st.checkbox("AI analysis", value=has_key and Config.ENABLE_AI_ANALYSIS, disabled=not has_key)

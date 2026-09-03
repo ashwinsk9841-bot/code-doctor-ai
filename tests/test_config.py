@@ -104,3 +104,54 @@ def test_validate_openai_with_key(monkeypatch):
     monkeypatch.setattr(Config, "OPENAI_API_KEY", "sk-test")
     is_valid, _ = Config.validate()
     assert is_valid
+
+
+def test_default_provider_is_opencode_zen(monkeypatch):
+    """OpenCode Zen is the code-level default provider (free, no paid credits)."""
+    import importlib
+    import config as cfg
+    import dotenv
+    # Neutralize any ambient AI_PROVIDER env var / .env override so we assert the
+    # code-level default. Patch the underlying dotenv loader so the reload's
+    # `from dotenv import load_dotenv` picks up the stub (no .env re-read).
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda **kw: None)
+    importlib.reload(cfg)
+    assert cfg.Config.AI_PROVIDER == "opencode_zen"
+
+
+def test_opencode_zen_default_model():
+    """OpenCode Zen defaults to the free big-pickle model."""
+    assert Config.OPENCODE_ZEN_MODEL == "big-pickle"
+
+
+def test_effective_model_opencode_zen(monkeypatch):
+    """effective_model('opencode_zen') uses OPENCODE_ZEN_MODEL, then big-pickle."""
+    monkeypatch.setattr(Config, "OPENCODE_ZEN_MODEL", "")
+    monkeypatch.setattr(Config, "AI_MODEL", "")
+    assert Config.effective_model("opencode_zen") == "big-pickle"
+    # Explicit zen model wins
+    monkeypatch.setattr(Config, "OPENCODE_ZEN_MODEL", "mimo-v2.5-free")
+    assert Config.effective_model("opencode_zen") == "mimo-v2.5-free"
+    # Falls back to the generic AI_MODEL if zen model empty
+    monkeypatch.setattr(Config, "OPENCODE_ZEN_MODEL", "")
+    monkeypatch.setattr(Config, "AI_MODEL", "gpt-4-turbo")
+    assert Config.effective_model("opencode_zen") == "gpt-4-turbo"
+
+
+def test_validate_opencode_zen_with_key(monkeypatch):
+    """OpenCode Zen provider is valid when OPENCODE_ZEN_API_KEY is set."""
+    monkeypatch.setattr(Config, "AI_PROVIDER", "opencode_zen")
+    monkeypatch.setattr(Config, "OPENCODE_ZEN_API_KEY", "sk-zen-test")
+    monkeypatch.setattr(Config, "AI_API_KEY", "")
+    monkeypatch.setattr(Config, "OPENAI_API_KEY", "")
+    is_valid, _ = Config.validate()
+    assert is_valid
+
+
+def test_validate_unknown_provider(monkeypatch):
+    """Unknown providers are rejected."""
+    monkeypatch.setattr(Config, "AI_PROVIDER", "bogus")
+    is_valid, message = Config.validate()
+    assert not is_valid
+    assert "opencode_zen" in message
