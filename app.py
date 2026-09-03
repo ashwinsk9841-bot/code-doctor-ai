@@ -32,6 +32,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Load secrets from Streamlit Cloud (safe to call on local dev too)
+Config.load_from_secrets()
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -50,6 +53,7 @@ _defaults = {
     "assistant_status": ("Ready. Paste a GitHub repository URL to begin.", "ready"),
     "raw_report": "",
     "json_report": "",
+    "_provider_error": None,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -62,20 +66,40 @@ def _set_status(text, kind="ready"):
 
 # ---------------------------------------------------------------------------
 def build_ai_provider(enable_ai: bool):
-    """Create an AI provider from config, or None if unavailable/disabled."""
+    """Create an AI provider from config, or None if unavailable/disabled.
+
+    Stores ``st.session_state._provider_error`` when creation fails so the UI
+    can display a helpful message instead of silently disabling AI.
+    """
     if not enable_ai:
         return None
+
     provider = Config.AI_PROVIDER
-    if not Config.AI_API_KEY and provider == "anthropic":
-        provider = "openai"
-    if not Config.AI_API_KEY and not Config.OPENAI_API_KEY:
-        return None
+    api_key = Config.AI_API_KEY
+    model = Config.effective_model(provider)
+    extra_key = Config.OPENAI_API_KEY
+    extra_model = Config.effective_model("openai")
+
+    # Auto-fallback: if primary provider has no key, try the other
+    if provider == "anthropic" and not api_key:
+        if extra_key:
+            provider = "openai"
+        elif not extra_key:
+            return None
+    elif provider == "openai" and not extra_key:
+        if api_key:
+            provider = "anthropic"
+        else:
+            return None
+
     try:
         return create_ai_provider(
-            provider, Config.AI_API_KEY, Config.AI_MODEL,
-            extra_key=Config.OPENAI_API_KEY, extra_model=Config.OPENAI_MODEL,
+            provider, api_key, model,
+            extra_key=extra_key, extra_model=extra_model,
         )
-    except Exception:
+    except Exception as e:
+        msg, kind = classify_provider_error(e)
+        st.session_state["_provider_error"] = (msg, kind)
         return None
 
 
@@ -88,12 +112,15 @@ def setup_sidebar():
         st.divider()
 
         st.markdown("##### ⚙️ Configuration")
+        Config.load_from_secrets()
+        Config.validate()
         has_key = bool(Config.AI_API_KEY or Config.OPENAI_API_KEY)
+
         if not has_key:
             st.warning(
                 "No AI API key found. Static, security & dependency analysis "
-                "will run locally. Add `AI_API_KEY`/`OPENAI_API_KEY` to `.env` "
-                "to enable AI code review."
+                "will run locally. Add `AI_API_KEY` or `OPENAI_API_KEY` to "
+                "your Streamlit secrets (or `.env` locally) to enable AI code review."
             )
 
         enable_ai = st.checkbox("AI analysis", value=has_key and Config.ENABLE_AI_ANALYSIS, disabled=not has_key)
@@ -112,7 +139,8 @@ def setup_sidebar():
             if st.button("🔄 New Scan", use_container_width=True):
                 _cleanup_repo()
                 for k in ("analysis", "files_map", "applied_issues", "test_result",
-                          "test_framework", "error", "raw_report", "json_report"):
+                          "test_framework", "error", "raw_report", "json_report",
+                          "_provider_error"):
                     st.session_state[k] = _defaults[k]
                 st.session_state.stage = "landing"
                 st.session_state.repo_url = ""
@@ -236,6 +264,13 @@ def scanning_view(opts):
 
         # Build analyzer
         provider = build_ai_provider(opts["enable_ai"])
+        if provider is None and opts["enable_ai"]:
+            prov_err = getattr(st.session_state, "_provider_error", None)
+            if prov_err:
+                err_msg, err_kind = prov_err
+                _set_status(f"AI provider error: {err_msg}", "error")
+                st.warning(f"⚠️ AI provider unavailable — {err_msg} "
+                           "Proceeding with local scans only.")
         analyzer = CodeAnalyzer(provider)
 
         def report_progress(msg):

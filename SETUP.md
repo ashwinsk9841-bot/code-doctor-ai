@@ -181,6 +181,34 @@ CODE-DOCTOR-AI/
 4. Create a new key
 5. Copy and add to `.env`
 
+## Deploying to Streamlit Community Cloud
+
+1. **Push this repository to GitHub.**
+2. **Create the app** — go to [Streamlit Community Cloud](https://streamlit.io/cloud),
+   click **New app**, connect your GitHub account, select the repo, set
+   **Main file path** to `app.py`, and click **Deploy**.
+3. **Add secrets** — after deployment, open the app's **Settings → Secrets**
+   and paste TOML with your provider key:
+
+```toml
+# Anthropic provider (either use this, or the OpenAI block below)
+AI_PROVIDER = "anthropic"
+AI_API_KEY = "sk-ant-your-key-here"
+AI_MODEL = "claude-sonnet-4-20250514"
+```
+
+```toml
+# OpenAI provider (alternative)
+AI_PROVIDER = "openai"
+OPENAI_API_KEY = "sk-your-openai-key-here"
+OPENAI_MODEL = "gpt-4o"
+```
+
+> **Only one provider key is required.** If you set both keys, set
+> `AI_PROVIDER = "auto"` to let the app pick. The app reads these secrets on
+> startup via `Config.load_from_secrets()`. Without any key, the deployed app
+> still runs static/security/dependency scans.
+
 ## Next Steps
 
 1. **Test the application** - Run `streamlit run app.py` and analyze a GitHub repo

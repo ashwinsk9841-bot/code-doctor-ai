@@ -1,24 +1,88 @@
 """
 Configuration management for Code Doctor AI
+
+Reads configuration from (in order of precedence):
+1. Streamlit secrets (st.secrets) — used on Streamlit Community Cloud
+2. Environment variables — used in CI / manual deployment
+3. .env file (via python-dotenv) — used for local development
 """
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from the project root regardless of the current working directory.
+_PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv(dotenv_path=_PROJECT_ROOT / ".env")
+
+
+def _env(name: str, default: str = "") -> str:
+    """Read a configuration value from the environment."""
+    return os.getenv(name, default)
 
 
 class Config:
     """Application configuration"""
 
     # AI Provider Settings
-    AI_PROVIDER = os.getenv("AI_PROVIDER", "anthropic")
-    AI_API_KEY = os.getenv("AI_API_KEY", "")
-    AI_MODEL = os.getenv("AI_MODEL", "")
+    AI_PROVIDER = _env("AI_PROVIDER", "anthropic")
+    AI_API_KEY = _env("AI_API_KEY", "")
+    AI_MODEL = _env("AI_MODEL", "")
 
     # OpenAI Settings (alternative)
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+    OPENAI_API_KEY = _env("OPENAI_API_KEY", "")
+    OPENAI_MODEL = _env("OPENAI_MODEL", "gpt-4o")
+
+    # Default models per provider (used when AI_MODEL / OPENAI_MODEL are empty)
+    _DEFAULT_MODELS = {
+        "anthropic": "claude-sonnet-4-20250514",
+        "openai": "gpt-4o",
+    }
+
+    # Whether load_from_secrets() has already been called
+    _secrets_loaded = False
+
+    @classmethod
+    def load_from_secrets(cls) -> None:
+        """Overlay Streamlit secrets onto Config attributes.
+
+        Safe to call even outside a running Streamlit app — it simply returns
+        without doing anything when ``st.secrets`` is unavailable (e.g. in
+        tests or plain Python scripts).
+        """
+        if cls._secrets_loaded:
+            return
+        cls._secrets_loaded = True
+        try:
+            import streamlit as st
+            if not st.secrets:
+                return
+            _secrets = st.secrets
+        except Exception:
+            return
+
+        secret_map = {
+            "AI_PROVIDER": "AI_PROVIDER",
+            "AI_API_KEY": "AI_API_KEY",
+            "AI_MODEL": "AI_MODEL",
+            "OPENAI_API_KEY": "OPENAI_API_KEY",
+            "OPENAI_MODEL": "OPENAI_MODEL",
+        }
+        for secret_key, attr in secret_map.items():
+            try:
+                if secret_key in st.secrets:
+                    value = str(st.secrets[secret_key]).strip()
+                    if value:
+                        setattr(cls, attr, value)
+            except Exception:
+                continue
+
+    @classmethod
+    def effective_model(cls, provider: str = "") -> str:
+        """Return the model that will actually be used for *provider*."""
+        provider = (provider or cls.AI_PROVIDER).lower()
+        if provider == "openai":
+            return cls.OPENAI_MODEL or cls.AI_MODEL or cls._DEFAULT_MODELS.get("openai", "gpt-4o")
+        return cls.AI_MODEL or cls._DEFAULT_MODELS.get("anthropic", "claude-sonnet-4-20250514")
 
     # Application Settings
     MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
@@ -111,26 +175,29 @@ class Config:
 
     @classmethod
     def validate(cls) -> "tuple[bool, str]":
-        """Validate configuration"""
+        """Validate configuration.  Returns (is_valid, message)."""
+        cls.load_from_secrets()
+
         if cls.AI_PROVIDER not in ("anthropic", "openai", "auto"):
             return False, (
                 f"Unknown AI_PROVIDER '{cls.AI_PROVIDER}'. "
-                "Supported: anthropic, openai, auto."
+                "Supported values: anthropic, openai, auto."
             )
 
-        if not cls.AI_API_KEY and not cls.OPENAI_API_KEY:
-            return False, (
-                "No API key configured. Set AI_API_KEY or OPENAI_API_KEY "
-                "in your .env file or Streamlit secrets."
-            )
+        provider = cls.AI_PROVIDER.lower()
 
-        if cls.AI_PROVIDER == "anthropic" and not cls.AI_API_KEY:
-            return False, "Anthropic provider selected but AI_API_KEY not set."
+        if provider in ("anthropic", "auto") and cls.AI_API_KEY:
+            return True, "Configuration valid."
 
-        if cls.AI_PROVIDER == "openai" and not cls.OPENAI_API_KEY:
-            return False, "OpenAI provider selected but OPENAI_API_KEY not set."
+        if provider in ("openai", "auto") and cls.OPENAI_API_KEY:
+            return True, "Configuration valid."
 
-        return True, "Configuration valid"
+        # No usable key found
+        return False, (
+            "No API key configured. Add **AI_API_KEY** (for Anthropic) or "
+            "**OPENAI_API_KEY** (for OpenAI) to your Streamlit secrets "
+            "or to your local `.env` file."
+        )
 
     @classmethod
     def get_extensions_for_language(cls, language: str) -> list:

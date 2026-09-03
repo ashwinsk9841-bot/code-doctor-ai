@@ -4,6 +4,14 @@ import os
 from config import Config
 
 
+@pytest.fixture(autouse=True)
+def _reset_secrets_loaded():
+    """Each test starts with a fresh secrets-load state."""
+    Config._secrets_loaded = False
+    yield
+    Config._secrets_loaded = False
+
+
 def test_supported_languages():
     """Test supported languages configuration"""
     assert "python" in Config.SUPPORTED_LANGUAGES
@@ -59,3 +67,40 @@ def test_validate_without_api_key(monkeypatch):
     is_valid, message = Config.validate()
     assert not is_valid
     assert "api key" in message.lower()
+
+
+def test_effective_model_defaults(monkeypatch):
+    """effective_model returns sensible defaults when no model is configured."""
+    monkeypatch.setattr(Config, "AI_PROVIDER", "anthropic")
+    monkeypatch.setattr(Config, "AI_MODEL", "")
+    monkeypatch.setattr(Config, "OPENAI_MODEL", "")
+    assert Config.effective_model("anthropic") == "claude-sonnet-4-20250514"
+    assert Config.effective_model("openai") == "gpt-4o"
+    # Explicit model takes precedence
+    monkeypatch.setattr(Config, "AI_MODEL", "claude-x")
+    assert Config.effective_model("anthropic") == "claude-x"
+
+
+def test_effective_model_openai_precedence(monkeypatch):
+    """OPENAI_MODEL beats a generic AI_MODEL for the openai provider."""
+    monkeypatch.setattr(Config, "OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(Config, "AI_MODEL", "gpt-4-turbo")
+    assert Config.effective_model("openai") == "gpt-4o-mini"
+    # When OPENAI_MODEL is empty, fall back to the generic model
+    monkeypatch.setattr(Config, "OPENAI_MODEL", "")
+    assert Config.effective_model("openai") == "gpt-4-turbo"
+
+
+def test_load_from_secrets_is_safe_outside_streamlit():
+    """Calling load_from_secrets with no Streamlit secrets must not raise."""
+    Config.load_from_secrets()  # should not raise even without secrets.toml
+    assert Config._secrets_loaded is True
+
+
+def test_validate_openai_with_key(monkeypatch):
+    """OpenAI provider is valid when OPENAI_API_KEY is set."""
+    monkeypatch.setattr(Config, "AI_PROVIDER", "openai")
+    monkeypatch.setattr(Config, "AI_API_KEY", "")
+    monkeypatch.setattr(Config, "OPENAI_API_KEY", "sk-test")
+    is_valid, _ = Config.validate()
+    assert is_valid

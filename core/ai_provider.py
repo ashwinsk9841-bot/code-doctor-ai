@@ -202,7 +202,7 @@ class AnthropicProvider(AIProvider):
             return AuthenticationError("AI provider rejected the request (403). Check permissions or key.")
         if code == 429 or "rate" in msg.lower():
             return RateLimitedError()
-        if "not_found" in msg.lower() or "model" in msg.lower() and "not" in msg.lower():
+        if "not_found" in msg.lower() or ("model" in msg.lower() and "not" in msg.lower()):
             return ModelUnavailableError()
         return ProviderError(f"Anthropic API error: {msg}", "provider")
 
@@ -254,7 +254,7 @@ class OpenAIProvider(AIProvider):
             return QuotaExceededError()
         if code == 429 or "rate limit" in msg.lower():
             return RateLimitedError()
-        if code == 404 or "model" in msg.lower() and ("not found" in msg.lower() or "does not exist" in msg.lower()):
+        if code == 404 or ("model" in msg.lower() and ("not found" in msg.lower() or "does not exist" in msg.lower())):
             return ModelUnavailableError()
         if code == 403:
             return ProviderError("AI provider rejected the request (403). Check permissions.", "provider")
@@ -273,7 +273,7 @@ def classify_provider_error(e: Exception) -> Tuple[str, str]:
         return "AI provider quota/credits exhausted.", "quota"
     if "429" in msg or "rate" in msg:
         return "AI provider rate limit hit. Try again shortly.", "rate_limit"
-    if "404" in msg or "model" in msg and "not" in msg:
+    if "404" in msg or ("model" in msg and "not" in msg):
         return "AI model unavailable or not found.", "model_unavailable"
     return f"AI provider error: {str(e)}", "provider"
 
@@ -285,7 +285,7 @@ def create_ai_provider(provider_name: str, api_key: str, model: str, extra_key: 
         if api_key:
             return AnthropicProvider(api_key, model)
         if extra_key:
-            return OpenAIProvider(extra_key, extra_model)
+            return OpenAIProvider(extra_key, extra_model or model or "gpt-4o")
         raise AuthenticationError(
             "No AI API key configured. Set AI_API_KEY or OPENAI_API_KEY in your .env file."
         )
@@ -294,5 +294,7 @@ def create_ai_provider(provider_name: str, api_key: str, model: str, extra_key: 
         return AnthropicProvider(key, model)
     if name == "openai":
         key = api_key or extra_key
-        return OpenAIProvider(key, model)
+        # Use the OpenAI-specific model when provided; fall back to the generic
+        # model only if the OpenAI one is empty. This honors OPENAI_MODEL from .env.
+        return OpenAIProvider(key, extra_model or model or "gpt-4o")
     raise ProviderError(f"Unknown AI provider: {provider_name}")

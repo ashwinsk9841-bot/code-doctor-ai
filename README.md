@@ -54,6 +54,26 @@ streamlit run app.py
 
 The app will open in your browser at `http://localhost:8501`.
 
+## ☁️ Deploy to Streamlit Community Cloud
+
+1. Push this repository to GitHub.
+2. Go to [Streamlit Community Cloud](https://streamlit.io/cloud) → **New app**, select the repo, set **Main file path** to `app.py`, and click **Deploy**.
+3. Configure your AI provider secrets in **Settings → Secrets** (the app reads these automatically):
+
+```toml
+# Example secrets (replace with your real keys)
+AI_PROVIDER = "anthropic"          # "anthropic", "openai", or "auto"
+AI_API_KEY = "sk-ant-..."          # your Anthropic key
+# AI_MODEL = "claude-sonnet-4-20250514"
+
+# Use these keys instead if you prefer OpenAI:
+# OPENAI_API_KEY = "sk-..."
+# OPENAI_MODEL = "gpt-4o"
+```
+
+> Only add **one** provider's key (or use `AI_PROVIDER = "auto"`). The app falls
+> back gracefully: without any key it still runs static/security/dependency scans.
+
 ## 📖 Usage
 
 1. **Enter a GitHub repository URL** (e.g. `https://github.com/octocat/Hello-World`) and click **Start Analysis**.
