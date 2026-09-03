@@ -9,8 +9,46 @@ the user's code.
 """
 import json
 import re
-from typing import Dict, Any, Optional, List, Tuple
+import time
+from typing import Dict, Any, Optional, List, Tuple, Callable
 from abc import ABC, abstractmethod
+
+from config import Config
+
+
+def _retry_with_backoff(fn: Callable[[], Any], classify: Callable[[Exception], Exception],
+                        max_attempts: Optional[int] = None,
+                        initial_delay: Optional[float] = None,
+                        backoff: Optional[float] = None) -> Any:
+    """Call ``fn`` retrying with exponential backoff on rate-limit errors.
+
+    The raw SDK call may raise 429 / rate-limit errors (which are classified as
+    :class:`RateLimitedError`). We retry a bounded number of times with a sleep
+    between attempts so transient provider pressure doesn't immediately fail the
+    request — while never looping aggressively or hammering the endpoint.
+    ``max_attempts`` here means the total number of tries (including the first).
+    Other error kinds are classified and raised immediately.
+    """
+    attempts = max_attempts if max_attempts is not None else Config.AI_RETRY_MAX
+    delay = initial_delay if initial_delay is not None else Config.AI_RETRY_INITIAL_DELAY
+    factor = backoff if backoff is not None else Config.AI_RETRY_BACKOFF
+    attempts = max(1, int(attempts))
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            err = classify(e)
+            if isinstance(err, RateLimitedError) and attempt < attempts - 1:
+                time.sleep(max(0.0, delay))
+                delay *= max(1.0, factor)
+                continue
+            raise err
+    raise _unreachable_rate_limit()
+
+
+def _unreachable_rate_limit() -> "RateLimitedError":
+    """Fallback guard so the retry helper always raises on exhaustion."""
+    return RateLimitedError()
 
 
 class ProviderError(Exception):
@@ -84,6 +122,56 @@ class AIProvider(ABC):
         return self._extract_json(raw, default={
             "issues": [], "overall_quality": "UNKNOWN",
         })
+
+    def analyze_many(self, files: List[Dict[str, Any]], max_chars_per_file: int = 4000) -> Dict[str, Any]:
+        """Analyze several files in a SINGLE AI request, attributing each issue to its file.
+
+        Returns a dict like ``{"issues": [...], "overall_quality": "..."}`` where every
+        issue carries a ``"file"`` key matching the path of the file it belongs to.
+        Files are capped per-file to bound token usage. Issues whose ``file`` is missing
+        default to the final fallback file.
+        """
+        if not files:
+            return {"issues": [], "overall_quality": "UNKNOWN"}
+
+        blocks = []
+        for record in files:
+            path = record.get("path", "<unknown>")
+            content = (record.get("content") or "")[:max_chars_per_file]
+            blocks.append(f"### FILE: {path}\n```\n{content}\n```")
+        combined = "\n\n".join(blocks)
+
+        system = (
+            "You are Code Doctor AI, a senior code reviewer. Analyze ALL of the files "
+            "provided below. Return ONLY a valid JSON object. Do not include markdown, "
+            "code fences, or prose outside the JSON.\n\n"
+            'Schema: {"issues": [{"file": str, "title": str, "category": one of '
+            'BUG,SECURITY,DEPENDENCY,PERFORMANCE,CODE_QUALITY,CONFIGURATION,TEST,OTHER, '
+            '"severity": one of CRITICAL,HIGH,MEDIUM,LOW,INFO, '
+            '"line": int|null, "line_end": int|null, '
+            '"description": str, "why_it_matters": str, "evidence": str, '
+            '"recommended_fix": str, "fixable": bool, "confidence": number 0..1}], '
+            '"overall_quality": "CRITICAL|POOR|FAIR|GOOD|EXCELLENT"} '
+            'The "file" field of each issue MUST match one of the "### FILE:" paths above. '
+            "Only report genuine, code-grounded issues with high confidence. "
+            "Do not invent vulnerabilities that are not present."
+        )
+        user_message = f"Analyze the following source files:\n\n{combined}"
+        raw = self.complete(system, user_message, max_tokens=6000)
+        data = self._extract_json(raw, default={"issues": [], "overall_quality": "UNKNOWN"})
+
+        known = {f.get("path") for f in files}
+        fallback = files[-1].get("path")
+        issues = []
+        for iss in data.get("issues", []):
+            fpath = iss.get("file")
+            # Only trust file paths that were actually provided to the model;
+            # otherwise attribute to the last (fallback) file to avoid invented paths.
+            if fpath not in known or not fpath:
+                fpath = fallback
+            iss["file"] = fpath
+            issues.append(iss)
+        return {"issues": issues, "overall_quality": data.get("overall_quality", "UNKNOWN")}
 
     def fix_code(self, code: str, language: str, issues: list) -> str:
         """Generate a corrected version of the code."""
@@ -165,6 +253,7 @@ class AnthropicProvider(AIProvider):
             raise AuthenticationError("Anthropic API key is required.")
         self.api_key = api_key
         self.model = model or "claude-sonnet-4-20250514"
+        self.timeout = Config.AI_REQUEST_TIMEOUT
         try:
             import anthropic
         except ImportError:
@@ -173,20 +262,24 @@ class AnthropicProvider(AIProvider):
                 "dependency",
             )
         self._anthropic = anthropic
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = anthropic.Anthropic(api_key=api_key, timeout=self.timeout)
 
     def _normalize_model(self) -> str:
         return self.model
 
     def complete(self, system: str, user_message: str, max_tokens: int = 4000) -> str:
-        try:
-            response = self.client.messages.create(
+        def _call():
+            return self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 system=system,
                 messages=[{"role": "user", "content": user_message}],
             )
+        try:
+            response = _retry_with_backoff(_call, self._classify)
             return response.content[0].text
+        except RateLimitedError:
+            raise RateLimitedError()
         except Exception as e:
             raise self._classify(e)
 
@@ -219,12 +312,13 @@ class OpenCodeZenProvider(AIProvider):
     DEFAULT_BASE_URL = "https://opencode.ai/zen/v1"
     DEFAULT_MODEL = "big-pickle"
 
-    def __init__(self, api_key: str, model: str = "", base_url: str = ""):
+    def __init__(self, api_key: str, model: str = "", base_url: str = "", timeout: Optional[float] = None):
         if not api_key:
             raise AuthenticationError("OpenCode Zen API key is required.")
         self.api_key = api_key
         self.model = model or self.DEFAULT_MODEL
         self.base_url = base_url or self.DEFAULT_BASE_URL
+        self.timeout = timeout if timeout is not None else Config.AI_REQUEST_TIMEOUT
         try:
             import openai
         except ImportError:
@@ -233,22 +327,27 @@ class OpenCodeZenProvider(AIProvider):
                 "dependency",
             )
         self._openai = openai
-        self.client = openai.OpenAI(api_key=api_key, base_url=self.base_url)
+        self.client = openai.OpenAI(api_key=api_key, base_url=self.base_url, timeout=self.timeout)
 
     def _normalize_model(self) -> str:
         return self.model
 
     def complete(self, system: str, user_message: str, max_tokens: int = 4000) -> str:
-        try:
-            response = self.client.chat.completions.create(
+        def _call():
+            return self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_message},
                 ],
                 max_tokens=max_tokens,
+                timeout=self.timeout,
             )
+        try:
+            response = _retry_with_backoff(_call, self._classify)
             return response.choices[0].message.content
+        except RateLimitedError:
+            raise RateLimitedError()
         except Exception as e:
             raise self._classify(e)
 
@@ -279,6 +378,7 @@ class OpenAIProvider(AIProvider):
             raise AuthenticationError("OpenAI API key is required.")
         self.api_key = api_key
         self.model = model or "gpt-4o"
+        self.timeout = Config.AI_REQUEST_TIMEOUT
         try:
             import openai
         except ImportError:
@@ -287,22 +387,27 @@ class OpenAIProvider(AIProvider):
                 "dependency",
             )
         self._openai = openai
-        self.client = openai.OpenAI(api_key=api_key)
+        self.client = openai.OpenAI(api_key=api_key, timeout=self.timeout)
 
     def _normalize_model(self) -> str:
         return self.model
 
     def complete(self, system: str, user_message: str, max_tokens: int = 4000) -> str:
-        try:
-            response = self.client.chat.completions.create(
+        def _call():
+            return self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_message},
                 ],
                 max_tokens=max_tokens,
+                timeout=self.timeout,
             )
+        try:
+            response = _retry_with_backoff(_call, self._classify)
             return response.choices[0].message.content
+        except RateLimitedError:
+            raise RateLimitedError()
         except Exception as e:
             raise self._classify(e)
 

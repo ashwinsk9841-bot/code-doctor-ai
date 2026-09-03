@@ -54,6 +54,7 @@ _defaults = {
     "raw_report": "",
     "json_report": "",
     "_provider_error": None,
+    "_prev_stage": "landing",
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -62,6 +63,33 @@ for k, v in _defaults.items():
 
 def _set_status(text, kind="ready"):
     st.session_state.assistant_status = (text, kind)
+
+
+# Valid in-app stages (used to validate back-navigation targets).
+_VALID_STAGES = ("landing", "scanning", "dashboard", "issues", "tests", "report")
+
+
+def _record_prev_stage():
+    """Remember the current stage as the "previous" stage for back navigation."""
+    cur = st.session_state.stage
+    if cur in _VALID_STAGES:
+        st.session_state._prev_stage = cur
+
+
+def _back_target(prev_stage):
+    """Compute the correct target stage for back-navigation from a stored previous stage."""
+    if prev_stage in ("issues", "tests", "dashboard"):
+        return prev_stage
+    if prev_stage == "landing":
+        return "landing"
+    return "dashboard"
+
+
+def _go_back():
+    """Navigate to the previous appropriate scan/results view (not the browser back)."""
+    prev = getattr(st.session_state, "_prev_stage", None)
+    st.session_state.stage = _back_target(prev)
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +423,11 @@ def dashboard_view(opts):
     # AI / provider status note
     ai_status = analysis.get("ai_status", "disabled")
     if isinstance(ai_status, str) and ai_status.startswith("error"):
-        st.warning(f"⚠️ AI analysis note: {ai_status}")
+        _msg = _friendly_ai_status(ai_status)
+        st.warning(
+            f"⚠️ AI analysis note: {_msg}. Static, security & dependency "
+            "results below are unaffected."
+        )
     elif opts["enable_ai"] and analysis.get("ai_issues"):
         st.success(f"🤖 AI analysis identified {len(analysis['ai_issues'])} issue(s).")
     elif not opts["enable_ai"]:
@@ -415,18 +447,22 @@ def dashboard_view(opts):
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         if st.button("🐛 View Issues", type="primary", use_container_width=True):
+            _record_prev_stage()
             st.session_state.stage = "issues"
             st.rerun()
     with col2:
         if st.button("🧪 View Tests", use_container_width=True):
+            _record_prev_stage()
             st.session_state.stage = "tests"
             st.rerun()
     with col3:
         if st.button("📄 View Report", use_container_width=True):
+            _record_prev_stage()
             st.session_state.stage = "report"
             st.rerun()
     with col4:
         if st.button("🔧 Apply Suggested Fixes", use_container_width=True):
+            _record_prev_stage()
             st.session_state.stage = "issues"
             st.session_state._auto_fix = True
             st.rerun()
@@ -441,6 +477,12 @@ def issues_view(opts):
     issues = analysis.get("issues", [])
 
     st.markdown("<div class='cd-title'>🔍 Issue Explorer</div>", unsafe_allow_html=True)
+
+    back_col, _ = st.columns([1, 5])
+    with back_col:
+        if _back_button():
+            _go_back()
+
     st.write("")
 
     # Filters
@@ -588,7 +630,8 @@ def _revert_fix(iss):
 
 
 def _auto_apply_fixes(opts):
-    """Apply all deterministic (security) fixes automatically where safe."""
+    """Apply deterministic (security) fixes automatically where safe, batching AI
+    rewrites per file so we don't send a separate AI request for every issue."""
     analysis = st.session_state.analysis
     repo_path = st.session_state.repo_path
     if not repo_path:
@@ -596,26 +639,51 @@ def _auto_apply_fixes(opts):
     from core.fixer import CodeFixer
     fixer = CodeFixer(build_ai_provider(opts["enable_ai"]))
     verifier = Verifier(Path(repo_path))
+
+    pending = [
+        iss for iss in analysis.get("issues", [])
+        if iss.get("fixable")
+        and iss.get("issue_id") not in st.session_state.applied_issues
+    ]
+    if not pending:
+        st.info("No unapplied fixable issues remain.")
+        return
+
+    results = fixer.apply_many_fixes_to_repo(Path(repo_path), pending, st.session_state.files_map)
     applied = 0
-    for iss in analysis.get("issues", []):
-        vid = iss.get("issue_id")
-        if vid in st.session_state.applied_issues:
-            continue
-        if iss.get("source") == "security" and iss.get("fixable"):
-            res = fixer.apply_fix_to_repo(Path(repo_path), iss, st.session_state.files_map)
-            if res.get("applied"):
+    for res in results:
+        vid = res.get("issue_id")
+        if res.get("applied"):
+            # Find the original issue to verify against it.
+            iss = next((i for i in pending if i.get("issue_id") == vid), None)
+            if iss is not None:
                 ver = verifier.verify_fix(iss, res.get("changes", []), run_tests=False)
                 st.session_state.applied_issues[vid] = ver
                 applied += 1
+            else:
+                st.session_state.applied_issues[vid] = {
+                    "status": "NOT_VERIFIED", "verified": False,
+                    "notes": ["Fix applied, verification skipped."],
+                }
+                applied += 1
     if applied:
         _refresh_files_map(repo_path)
-        _set_status(f"Automatically applied {applied} safe security fix(es).")
-    st.info(f"Applied {applied} fix(es) automatically.")
+        _set_status(f"Automatically applied {applied} fix(es).")
+        st.info(f"Applied {applied} fix(es) automatically "
+                f"({len(results) - applied} could not be applied).")
+    else:
+        st.info("No fixes could be applied automatically.")
 
 
 # ---------------------------------------------------------------------------
 def tests_view(opts):
     st.markdown("<div class='cd-title'>🧪 Testing & Verification</div>", unsafe_allow_html=True)
+
+    back_col, _ = st.columns([1, 5])
+    with back_col:
+        if _back_button():
+            _go_back()
+
     st.write("")
 
     test_result = st.session_state.test_result
@@ -657,8 +725,41 @@ def tests_view(opts):
 
 
 # ---------------------------------------------------------------------------
+def _back_button(label="← Back"):
+    """Render a consistent in-app 'Back' button styled for the dark/gold theme."""
+    return st.button(label, use_container_width=False)
+
+
+def _friendly_ai_status(ai_status: str) -> str:
+    """Turn an ``error:<kind>:<msg>`` status string into a user-friendly message."""
+    if not isinstance(ai_status, str):
+        return "AI provider unavailable."
+    if ai_status.startswith("error:"):
+        parts = ai_status.split(":", 2)
+        kind = parts[1] if len(parts) > 1 else "provider"
+        detail = parts[2] if len(parts) > 2 else ""
+        friendly = {
+            "rate_limit": "the AI provider is temporarily rate-limited",
+            "quota": "the AI provider's quota/credits are exhausted",
+            "authentication": "AI provider authentication failed (check the API key)",
+            "model_unavailable": "the requested AI model is unavailable",
+            "provider": "the AI provider returned an error",
+            "dependency": "an AI dependency is missing",
+        }.get(kind, "the AI provider is unavailable")
+        if detail:
+            friendly = f"{friendly} ({detail})"
+        return friendly
+    return ai_status
+
+
 def report_view(opts):
     st.markdown("<div class='cd-title'>📄 Final Report</div>", unsafe_allow_html=True)
+
+    back_col, _ = st.columns([1, 5])
+    with back_col:
+        if _back_button():
+            _go_back()
+
     st.write("")
 
     analysis = st.session_state.analysis

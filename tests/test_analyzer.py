@@ -58,3 +58,34 @@ def test_language_breakdown(tmp_path):
     result = analyzer.analyze_repository(tmp_path, "o/r", enable_security=False, enable_ai=False)
     breakdown = result["language_summary"]
     assert breakdown.get("python", 0) >= 1
+
+
+def test_repository_ai_analysis_is_batched_single_call(tmp_path):
+    """AI analysis over a repo uses ONE batched analyze_many call, not per-file."""
+    (tmp_path / "a.py").write_text("def a():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def b():\n    return 2\n")
+    (tmp_path / "c.py").write_text("def c():\n    return 3\n")
+    provider = make_provider()
+    provider.analyze_many.return_value = {
+        "issues": [{"file": "a.py", "title": "X", "line": 1}],
+        "overall_quality": "GOOD",
+    }
+    analyzer = CodeAnalyzer(provider)
+    result = analyzer.analyze_repository(tmp_path, "o/r", enable_security=False, enable_ai=True)
+    assert provider.analyze_many.call_count == 1
+    ai = [i for i in result["ai_issues"] if i.get("source") == "ai"]
+    assert len(ai) == 1
+    assert ai[0]["file"] == "a.py"
+
+
+def test_repository_ai_graceful_fallback_on_error(tmp_path):
+    """If the AI provider fails, analysis still returns static results with an error status."""
+    (tmp_path / "a.py").write_text("def a():\n    return 1\n")
+    provider = make_provider()
+    from core.ai_provider import RateLimitedError
+    provider.analyze_many.side_effect = RateLimitedError("rate limited")
+    analyzer = CodeAnalyzer(provider)
+    result = analyzer.analyze_repository(tmp_path, "o/r", enable_security=False, enable_ai=True)
+    assert result["success"] is True
+    assert result["ai_status"].startswith("error:rate_limit")
+    assert "files" in result

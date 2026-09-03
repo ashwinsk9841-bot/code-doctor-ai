@@ -68,3 +68,45 @@ def test_unsafe_path_rejected(tmp_path):
     result = fixer.apply_fix_to_repo(tmp_path, issue, record)
     assert result["applied"] is False
     assert "unsafe" in result["error"].lower() or "missing" in result["error"].lower()
+
+
+def test_apply_many_batches_ai_fix_per_file(tmp_path):
+    """AI-fixable issues in the same file share a single AI fix_code request."""
+    from unittest.mock import Mock
+    f = tmp_path / "app.py"
+    original = "def f():\n    return 0\n"
+    f.write_text(original)
+
+    ai = Mock()
+    ai.fix_code.return_value = "def f():\n    return 42\n"
+
+    fixer = CodeFixer(ai)
+    issues = [
+        {"issue_id": "A", "file": "app.py", "line": 2, "language": "python",
+         "source": "parser", "fixable": True, "title": "bad return"},
+        {"issue_id": "B", "file": "app.py", "line": 1, "language": "python",
+         "source": "parser", "fixable": True, "title": "other"},
+    ]
+    results = fixer.apply_many_fixes_to_repo(tmp_path, issues, {"app.py": {"path": "app.py"}})
+    # One AI call handled both issues from the same file.
+    assert ai.fix_code.call_count == 1
+    assert all(r["applied"] for r in results)
+    assert f.read_text().strip() == "def f():\n    return 42".strip()
+    assert {r["issue_id"] for r in results} == {"A", "B"}
+
+
+def test_apply_many_deterministic_security_per_issue(tmp_path):
+    """Security issues are still fixed deterministically (one per issue)."""
+    from unittest.mock import Mock
+    f = tmp_path / "cfg.py"
+    f.write_text('TOKEN = "sk-1234567890abcdefghij"\nprint(TOKEN)')
+
+    ai = Mock()
+    fixer = CodeFixer(ai)
+    issues = [{"issue_id": "S1", "file": "cfg.py", "line": 1,
+               "source": "security", "fixable": True, "title": "Hardcoded TOKEN"}]
+    results = fixer.apply_many_fixes_to_repo(tmp_path, issues, {"cfg.py": {"path": "cfg.py"}})
+    assert results[0]["applied"] is True
+    new = f.read_text()
+    assert "sk-1234567890abcdefghij" not in new
+    assert "os.environ" in new

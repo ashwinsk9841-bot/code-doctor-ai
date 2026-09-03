@@ -229,3 +229,94 @@ def test_classify_opencode_zen_authentication():
     err = ap.OpenCodeZenProvider._classify(Fake())
     assert err.kind == "authentication"
     assert isinstance(err, ap.AuthenticationError)
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit retry / backoff
+# ---------------------------------------------------------------------------
+
+def test_retry_with_backoff_retries_on_rate_limit(monkeypatch):
+    """A 429 rate-limit error is retried and eventually succeeds."""
+    import core.ai_provider as ap
+    calls = {"n": 0}
+
+    def classify(e):
+        return ap.RateLimitedError() if isinstance(e, RuntimeError) else e
+
+    def fn():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("429 rate limit")
+        return "ok"
+
+    sleeps = []
+    monkeypatch.setattr(ap.time, "sleep", lambda s: sleeps.append(s))
+    result = ap._retry_with_backoff(fn, classify, max_attempts=3,
+                                    initial_delay=0.0, backoff=2.0)
+    assert result == "ok"
+    assert calls["n"] == 3
+    assert sleeps == [0.0, 0.0]
+
+
+def test_retry_with_backoff_raises_after_exhaustion():
+    """Persistent rate-limit raises RateLimitedError after max attempts."""
+    import core.ai_provider as ap
+
+    def classify(e):
+        return ap.RateLimitedError()
+
+    def fn():
+        raise RuntimeError("429 rate limit")
+
+    import pytest
+    with pytest.raises(ap.RateLimitedError):
+        ap._retry_with_backoff(fn, classify, max_attempts=2,
+                               initial_delay=0.0, backoff=2.0)
+
+
+def test_retry_with_backoff_passthrough_other_errors(monkeypatch):
+    """Non-rate-limit errors are classified and raised without retry."""
+    import core.ai_provider as ap
+
+    def classify(e):
+        return ap.AuthenticationError("bad key")
+
+    def fn():
+        raise RuntimeError("unauthorized")
+
+    monkeypatch.setattr(ap.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("no sleep")))
+    with pytest.raises(ap.AuthenticationError):
+        ap._retry_with_backoff(fn, classify, max_attempts=3,
+                               initial_delay=0.0, backoff=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Batched multi-file analysis
+# ---------------------------------------------------------------------------
+
+def test_analyze_many_attributes_files_and_dedupes():
+    """analyze_many batches files into one request and tags issues by file."""
+    from core.ai_provider import AIProvider
+
+    class P(AIProvider):
+        provider_name = "opencode_zen"
+        def __init__(self):
+            self.calls = 0
+        def _normalize_model(self):
+            return "big-pickle"
+        def complete(self, system, user_message, max_tokens=4000):
+            self.calls += 1
+            return ('{"issues": ['
+                    '{"file": "a.py", "title": "X", "line": 1},'
+                    '{"file": "b.py", "title": "Y"},'
+                    '{"file": "missing.py", "title": "Z"}], '
+                    '"overall_quality": "GOOD"}')
+
+    provider = P()
+    files = [{"path": "a.py", "content": "a"}, {"path": "b.py", "content": "b"}]
+    result = provider.analyze_many(files)
+    assert provider.calls == 1  # exactly one batched request
+    assert result["issues"][0]["file"] == "a.py"
+    assert result["issues"][1]["file"] == "b.py"
+    # Unknown file falls back to the last provided file.
+    assert result["issues"][2]["file"] == "b.py"

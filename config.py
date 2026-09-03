@@ -44,6 +44,12 @@ class Config:
         "opencode_zen": "big-pickle",
     }
 
+    # AI request timeouts & rate-limit retry
+    AI_REQUEST_TIMEOUT = int(os.getenv("AI_REQUEST_TIMEOUT", "120"))
+    AI_RETRY_MAX = int(os.getenv("AI_RETRY_MAX", "3"))
+    AI_RETRY_INITIAL_DELAY = float(os.getenv("AI_RETRY_INITIAL_DELAY", "1.0"))
+    AI_RETRY_BACKOFF = float(os.getenv("AI_RETRY_BACKOFF", "2.0"))
+
     # Whether load_from_secrets() has already been called
     _secrets_loaded = False
 

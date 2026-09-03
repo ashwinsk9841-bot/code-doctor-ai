@@ -91,37 +91,46 @@ class CodeAnalyzer:
         }
 
     def _run_ai_analysis(self, files: List[Dict[str, Any]]) -> tuple:
-        """Run AI analysis over a bounded sample of the most relevant files."""
+        """Run AI analysis over a bounded sample of the most relevant files.
+
+        Sends the sample files in a SINGLE batched request (``ai_provider.analyze_many``)
+        rather than one request per file, which dramatically reduces API/rate-limit
+        pressure when using the free OpenCode Zen model. If the provider is
+        temporarily rate-limited, we gracefully fall back (returning whatever was
+        already collected and a clear ``error:rate_limit`` status) instead of hanging.
+        """
         candidate_files = [f for f in files if f.get("success") and f.get("content")]
         if not candidate_files:
             return None, [], "no_files"
 
         # Prioritize files with detected issues or larger/diverse sources.
-        _by_ext = sorted(candidate_files, key=lambda f: f.get("lines", 0), reverse=True)
-        sample = _by_ext[:8]
+        _by_lang = [f for f in candidate_files
+                    if f.get("language") not in ("json", "yaml", "toml", "markdown", "make", "dockerfile")]
+        sample = _by_lang or candidate_files
+        sample = sorted(sample, key=lambda f: f.get("lines", 0), reverse=True)[:8]
         if not sample:
             return None, [], "no_files"
 
-        ticks = [i / len(_by_ext) for i in range(len(_by_ext))]
         ai_issues: List[Dict[str, Any]] = []
-        ai_file = None
+        ai_file = sample[0]
         try:
-            for idx, record in enumerate(sample):
-                lang = record.get("language", "text")
-                if lang in ("json", "yaml", "toml", "markdown", "make", "dockerfile"):
+            result = self.ai_provider.analyze_many(sample)
+            seen_issues = set()
+            for iss in result.get("issues", []):
+                file = iss.get("file")
+                if not file or file in ("<unknown>", "unknown", "<input>"):
+                    file = sample[0].get("path")
+                iss["file"] = file
+                iss["line"] = iss.get("line") or 1
+                iss["source"] = "ai"
+                key = (file, iss.get("line"), iss.get("title"))
+                if key in seen_issues:
                     continue
-                result = self.ai_provider.analyze_code(
-                    record["content"], lang, "full",
-                    file_context=[{"path": record["path"], "content": record["content"][:4000]}],
-                )
-                for iss in result.get("issues", []):
-                    iss["file"] = record["path"]
-                    iss["line"] = iss.get("line") or 1
-                    iss["source"] = "ai"
-                    ai_issues.append(iss)
-                ai_file = ai_file or record
-                if idx >= 4:
-                    break
+                seen_issues.add(key)
+                ai_issues.append(iss)
+            if not ai_issues:
+                # No issues reported for the sampled files; still mark as ok.
+                pass
             return ai_file, ai_issues, "ok"
         except Exception as e:
             msg, kind = classify_provider_error(e)

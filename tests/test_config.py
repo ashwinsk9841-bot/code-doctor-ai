@@ -61,8 +61,10 @@ def test_validate_with_api_key(monkeypatch):
 
 def test_validate_without_api_key(monkeypatch):
     """Test config validation without API key"""
+    monkeypatch.setattr(Config, "AI_PROVIDER", "auto")
     monkeypatch.setattr(Config, "AI_API_KEY", "")
     monkeypatch.setattr(Config, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(Config, "OPENCODE_ZEN_API_KEY", "")
 
     is_valid, message = Config.validate()
     assert not is_valid

@@ -59,6 +59,91 @@ class CodeFixer:
 
         return {"applied": False, "error": "No deterministic or AI fix available."}
 
+    def apply_many_fixes_to_repo(self, repo_root: Path,
+                                 issues: List[Dict[str, Any]],
+                                 files_map: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Apply fixes for MANY issues, batching AI rewrites per file.
+
+        Deterministic security fixes are applied individually. AI-driven rewrites
+        are grouped by file so a single ``fix_code`` request handles every AI-fixable
+        issue in that file (instead of one request per issue), reducing API/rate-limit
+        pressure. ``files_map`` is the parsed file records; the list returned matches
+        the input ``issues`` order with an ``applied``/``error`` result per issue.
+        """
+        results: List[Dict[str, Any]] = []
+        security_batches: List[Dict[str, Any]] = []
+        ai_batches: Dict[str, List[Dict[str, Any]]] = {}  # file -> issues
+
+        for issue in issues:
+            if issue.get("source") == "security":
+                security_batches.append(issue)
+            else:
+                fpath = issue.get("file")
+                if fpath:
+                    ai_batches.setdefault(fpath, []).append(issue)
+
+        applied_by_id: Dict[str, bool] = {}
+
+        for issue in security_batches:
+            res = self.apply_fix_to_repo(repo_root, issue, files_map)
+            applied_by_id[issue.get("issue_id")] = res.get("applied", False)
+            results.append({"issue_id": issue.get("issue_id"), **res})
+
+        for fpath, batch in ai_batches.items():
+            absolute = (repo_root / fpath).resolve()
+            if absolute is None or not absolute.exists() or not _is_within(repo_root, absolute):
+                for issue in batch:
+                    applied_by_id[issue.get("issue_id")] = False
+                    results.append({"issue_id": issue.get("issue_id"),
+                                    "applied": False, "changes": [],
+                                    "error": "Unsafe or missing target file path."})
+                continue
+            batch_res = self._ai_fix_many(repo_root, absolute, batch)
+            # Apply the same file-level result to each issue in the batch.
+            if batch_res.get("applied"):
+                for issue in batch:
+                    applied_by_id[issue.get("issue_id")] = True
+                    results.append({"issue_id": issue.get("issue_id"), **batch_res,
+                                    "changes": batch_res.get("changes", [])})
+            else:
+                for issue in batch:
+                    applied_by_id[issue.get("issue_id")] = False
+                    results.append({"issue_id": issue.get("issue_id"), **batch_res})
+
+        return results
+
+    def _ai_fix_many(self, repo_root: Path, absolute: Path,
+                     issues: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """AI-rewrite a single file to fix ALL of its issues in one request."""
+        try:
+            original_text = absolute.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            return {"applied": False, "error": f"Could not read file: {e}"}
+
+        language = issues[0].get("language") if issues else "text"
+        try:
+            fixed = self.ai_provider.fix_code(original_text, language, issues)
+        except Exception as e:
+            msg, _ = classify_provider_error(e)
+            return {"applied": False, "error": f"AI fix failed: {msg}"}
+
+        if not fixed or fixed.strip() == original_text.strip():
+            return {"applied": False, "error": "AI produced no change."}
+
+        if not self._validate_syntax(fixed, issues[0].get("file") if issues else None):
+            return {"applied": False, "error": "AI fix produced invalid syntax; not applied."}
+
+        backup = self._backup(repo_root, absolute)
+        absolute.write_text(fixed, encoding="utf-8")
+        return {
+            "applied": True,
+            "backup": backup,
+            "changes": [{"file": issues[0].get("file"), "line": issues[0].get("line"),
+                         "original": "<file rewritten>", "new": "<rewritten>",
+                         "reason": f"AI-driven fix applied for {len(issues)} issue(s).",
+                         "risk": "medium", "verification": "NOT_VERIFIED"}],
+        }
+
     def _fix_security(self, repo_root: Path, absolute: Path,
                       issue: Dict[str, Any]) -> Dict[str, Any]:
         """Replace hardcoded secret literals with environment-variable reads."""
