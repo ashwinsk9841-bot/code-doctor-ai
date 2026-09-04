@@ -480,7 +480,7 @@ def issues_view(opts):
 
     back_col, _ = st.columns([1, 5])
     with back_col:
-        if _back_button():
+        if _back_button(key="back_issues"):
             _go_back()
 
     st.write("")
@@ -681,7 +681,7 @@ def tests_view(opts):
 
     back_col, _ = st.columns([1, 5])
     with back_col:
-        if _back_button():
+        if _back_button(key="back_tests"):
             _go_back()
 
     st.write("")
@@ -725,9 +725,14 @@ def tests_view(opts):
 
 
 # ---------------------------------------------------------------------------
-def _back_button(label="← Back"):
-    """Render a consistent in-app 'Back' button styled for the dark/gold theme."""
-    return st.button(label, use_container_width=False)
+def _back_button(label="← Back", key=None):
+    """Render a consistent in-app 'Back' button styled for the dark/gold theme.
+
+    ``key`` must be a stable, unique string per call site so the button never
+    collides with other ``← Back`` buttons rendered in the same run (e.g. the
+    error banner's back button), which would raise StreamlitDuplicateElementId.
+    """
+    return st.button(label, key=key, use_container_width=False)
 
 
 def _friendly_ai_status(ai_status: str) -> str:
@@ -757,7 +762,7 @@ def report_view(opts):
 
     back_col, _ = st.columns([1, 5])
     with back_col:
-        if _back_button():
+        if _back_button(key="back_report"):
             _go_back()
 
     st.write("")
@@ -818,7 +823,7 @@ def main():
     if st.session_state.error:
         st.error(st.session_state.error)
         if st.session_state.stage != "landing":
-            if st.button("← Back"):
+            if st.button("← Back", key="error_back"):
                 st.session_state.error = None
                 st.session_state.stage = "landing"
                 st.rerun()

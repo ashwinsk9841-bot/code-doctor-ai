@@ -124,8 +124,8 @@ class CodeFixer:
         try:
             fixed = self.ai_provider.fix_code(original_text, language, issues)
         except Exception as e:
-            msg, _ = classify_provider_error(e)
-            return {"applied": False, "error": f"AI fix failed: {msg}"}
+            msg, kind = classify_provider_error(e)
+            return {"applied": False, "error": _fix_error_message(msg, kind)}
 
         if not fixed or fixed.strip() == original_text.strip():
             return {"applied": False, "error": "AI produced no change."}
@@ -196,8 +196,8 @@ class CodeFixer:
         try:
             fixed = self.ai_provider.fix_code(original_text, issue.get("language", "text"), [issue])
         except Exception as e:
-            msg, _ = classify_provider_error(e)
-            return {"applied": False, "error": f"AI fix failed: {msg}"}
+            msg, kind = classify_provider_error(e)
+            return {"applied": False, "error": _fix_error_message(msg, kind)}
 
         if not fixed or fixed.strip() == original_text.strip():
             return {"applied": False, "error": "AI produced no change."}
@@ -340,3 +340,28 @@ def _is_within(root: Path, path: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _fix_error_message(msg: str, kind: str) -> str:
+    """Return a clear, graceful error message for a failed AI fix.
+
+    Rate-limits are transient and should not read as a broken fix — we tell the
+    user to retry shortly while reassuring them the rest of the app still works.
+    Other provider errors keep their original detail.
+    """
+    if kind == "rate_limit":
+        return (
+            "AI fix is temporarily rate-limited by the provider. Please try again "
+            "shortly. All static, security & dependency results remain available."
+        )
+    if kind == "quota":
+        return (
+            "AI fix could not run: the provider's quota/credits are exhausted. "
+            "Local static, security & dependency fixes are unaffected."
+        )
+    if kind == "authentication":
+        return (
+            "AI fix could not run: provider authentication failed. Check the "
+            "API key. Local static, security & dependency fixes are unaffected."
+        )
+    return f"AI fix failed: {msg}"

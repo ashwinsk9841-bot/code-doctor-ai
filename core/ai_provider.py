@@ -27,7 +27,10 @@ def _retry_with_backoff(fn: Callable[[], Any], classify: Callable[[Exception], E
     between attempts so transient provider pressure doesn't immediately fail the
     request — while never looping aggressively or hammering the endpoint.
     ``max_attempts`` here means the total number of tries (including the first).
-    Other error kinds are classified and raised immediately.
+
+    If the provider includes a ``Retry-After`` header on the 429, we honour that
+    exact delay instead of the default backoff. Other error kinds are classified
+    and raised immediately.
     """
     attempts = max_attempts if max_attempts is not None else Config.AI_RETRY_MAX
     delay = initial_delay if initial_delay is not None else Config.AI_RETRY_INITIAL_DELAY
@@ -39,8 +42,9 @@ def _retry_with_backoff(fn: Callable[[], Any], classify: Callable[[Exception], E
         except Exception as e:
             err = classify(e)
             if isinstance(err, RateLimitedError) and attempt < attempts - 1:
-                time.sleep(max(0.0, delay))
-                delay *= max(1.0, factor)
+                wait = err.retry_after if getattr(err, "retry_after", None) else delay
+                time.sleep(max(0.0, wait))
+                delay = max(wait, delay * max(1.0, factor))
                 continue
             raise err
     raise _unreachable_rate_limit()
@@ -49,6 +53,45 @@ def _retry_with_backoff(fn: Callable[[], Any], classify: Callable[[Exception], E
 def _unreachable_rate_limit() -> "RateLimitedError":
     """Fallback guard so the retry helper always raises on exhaustion."""
     return RateLimitedError()
+
+
+def _retry_after_seconds(e: Exception) -> Optional[float]:
+    """Read a ``Retry-After`` header/value from a 429 exception, if present.
+
+    Some SDK errors expose response headers on ``e.response`` (openai) or
+    ``e.headers`` / ``e.response.headers`` (anthropic). ``Retry-After`` may be
+    an integer number of seconds or an HTTP-date; we only handle the numeric
+    form (the common case) and cap it to avoid sleeping too long.
+    """
+    import email.utils
+    headers = None
+    for attr in ("headers",):
+        probe = getattr(e, attr, None)
+        if probe:
+            headers = probe
+            break
+    if headers is None:
+        resp = getattr(e, "response", None)
+        headers = getattr(resp, "headers", None)
+    if not headers:
+        return None
+    raw = None
+    if hasattr(headers, "get"):
+        raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    raw = str(raw).strip()
+    if raw.isdigit():
+        return min(max(0.0, float(raw)), 60.0)
+    try:
+        parsed = email.utils.parsedate(raw)
+        if parsed:
+            from datetime import datetime
+            delay = datetime(*parsed[:6]).timestamp() - time.time()
+            return min(max(0.0, delay), 60.0)
+    except Exception:
+        return None
+    return None
 
 
 class ProviderError(Exception):
@@ -71,7 +114,8 @@ class QuotaExceededError(ProviderError):
 
 
 class RateLimitedError(ProviderError):
-    def __init__(self, message="AI provider rate limit hit. Try again shortly."):
+    def __init__(self, message="AI provider rate limit hit. Try again shortly.", retry_after: Optional[float] = None):
+        self.retry_after = retry_after
         super().__init__(message, "rate_limit")
 
 
@@ -279,7 +323,7 @@ class AnthropicProvider(AIProvider):
             response = _retry_with_backoff(_call, self._classify)
             return response.content[0].text
         except RateLimitedError:
-            raise RateLimitedError()
+            raise
         except Exception as e:
             raise self._classify(e)
 
@@ -294,7 +338,7 @@ class AnthropicProvider(AIProvider):
         if code == 403 and "permission" in msg.lower():
             return AuthenticationError("AI provider rejected the request (403). Check permissions or key.")
         if code == 429 or "rate" in msg.lower():
-            return RateLimitedError()
+            return RateLimitedError(retry_after=_retry_after_seconds(e))
         if "not_found" in msg.lower() or ("model" in msg.lower() and "not" in msg.lower()):
             return ModelUnavailableError()
         return ProviderError(f"Anthropic API error: {msg}", "provider")
@@ -347,7 +391,7 @@ class OpenCodeZenProvider(AIProvider):
             response = _retry_with_backoff(_call, self._classify)
             return response.choices[0].message.content
         except RateLimitedError:
-            raise RateLimitedError()
+            raise
         except Exception as e:
             raise self._classify(e)
 
@@ -360,7 +404,7 @@ class OpenCodeZenProvider(AIProvider):
         if code == 402 or "insufficient_quota" in msg.lower() or "billing" in msg.lower() or "credit" in msg.lower():
             return QuotaExceededError()
         if code == 429 or "rate limit" in msg.lower():
-            return RateLimitedError()
+            return RateLimitedError(retry_after=_retry_after_seconds(e))
         if code == 404 or ("model" in msg.lower() and ("not found" in msg.lower() or "does not exist" in msg.lower() or "not_found" in msg.lower())):
             return ModelUnavailableError()
         if code == 403:
@@ -407,7 +451,7 @@ class OpenAIProvider(AIProvider):
             response = _retry_with_backoff(_call, self._classify)
             return response.choices[0].message.content
         except RateLimitedError:
-            raise RateLimitedError()
+            raise
         except Exception as e:
             raise self._classify(e)
 
@@ -420,7 +464,7 @@ class OpenAIProvider(AIProvider):
         if code == 402 or "insufficient_quota" in msg.lower() or "billing" in msg.lower():
             return QuotaExceededError()
         if code == 429 or "rate limit" in msg.lower():
-            return RateLimitedError()
+            return RateLimitedError(retry_after=_retry_after_seconds(e))
         if code == 404 or ("model" in msg.lower() and ("not found" in msg.lower() or "does not exist" in msg.lower())):
             return ModelUnavailableError()
         if code == 403:

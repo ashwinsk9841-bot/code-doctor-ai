@@ -290,6 +290,73 @@ def test_retry_with_backoff_passthrough_other_errors(monkeypatch):
                                initial_delay=0.0, backoff=2.0)
 
 
+def test_retry_with_backoff_honors_retry_after(monkeypatch):
+    """When a 429 carries a Retry-After value, we sleep that amount, not the default."""
+    import core.ai_provider as ap
+    calls = {"n": 0}
+
+    def classify(e):
+        return ap.RateLimitedError(retry_after=5.0)
+
+    def fn():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise RuntimeError("429 rate limit")
+        return "ok"
+
+    sleeps = []
+    monkeypatch.setattr(ap.time, "sleep", lambda s: sleeps.append(s))
+    result = ap._retry_with_backoff(fn, classify, max_attempts=2,
+                                    initial_delay=1.0, backoff=2.0)
+    assert result == "ok"
+    assert sleeps == [5.0]
+
+
+def test_retry_after_seconds_parses_numeric_header():
+    """Numeric Retry-After headers on an error are read and capped."""
+    import core.ai_provider as ap
+
+    class FakeResp:
+        headers = {"retry-after": "7"}
+
+    class Fake:
+        response = FakeResp()
+        status_code = 429
+
+    assert ap._retry_after_seconds(Fake()) == 7.0
+
+
+def test_retry_after_seconds_absent_returns_none():
+    """No Retry-After header -> None (so default backoff is used)."""
+    import core.ai_provider as ap
+
+    class FakeResp:
+        headers = {}
+
+    class Fake:
+        response = FakeResp()
+
+    assert ap._retry_after_seconds(Fake()) is None
+
+
+def test_classify_opencode_zen_rate_limit_carries_retry_after():
+    """429 classification attaches the parsed Retry-After to the error."""
+    import core.ai_provider as ap
+
+    class FakeResp:
+        headers = {"retry-after": "12"}
+
+    class Fake:
+        status_code = 429
+        response = FakeResp()
+        def __str__(self):
+            return "429 Too Many Requests"
+
+    err = ap.OpenCodeZenProvider._classify(Fake())
+    assert isinstance(err, ap.RateLimitedError)
+    assert err.retry_after == 12.0
+
+
 # ---------------------------------------------------------------------------
 # Batched multi-file analysis
 # ---------------------------------------------------------------------------
