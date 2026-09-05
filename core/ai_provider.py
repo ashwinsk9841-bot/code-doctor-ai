@@ -344,52 +344,55 @@ class AnthropicProvider(AIProvider):
         return ProviderError(f"Anthropic API error: {msg}", "provider")
 
 
-class OpenCodeZenProvider(AIProvider):
-    """OpenCode Zen provider (free models like Big Pickle).
+class GeminiProvider(AIProvider):
+    """Google Gemini provider using the ``google-generativeai`` SDK.
 
-    OpenCode Zen exposes an OpenAI-compatible chat completions endpoint, so this
-    reuses the ``openai`` SDK pointed at ``https://opencode.ai/zen/v1``. The
-    default model is the free **Big Pickle**; no paid credits are required.
+    Uses the stable ``gemini-3.5-flash-lite`` model for fast code analysis
+    and fixes. System instructions are passed via ``system_instruction`` and
+    the ``max_tokens`` parameter maps to ``max_output_tokens``.
     """
 
-    provider_name = "opencode_zen"
-    DEFAULT_BASE_URL = "https://opencode.ai/zen/v1"
-    DEFAULT_MODEL = "big-pickle"
+    provider_name = "gemini"
+    DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
-    def __init__(self, api_key: str, model: str = "", base_url: str = "", timeout: Optional[float] = None):
+    def __init__(self, api_key: str, model: str = "", timeout: Optional[float] = None):
         if not api_key:
-            raise AuthenticationError("OpenCode Zen API key is required.")
+            raise AuthenticationError("Google Gemini API key is required.")
         self.api_key = api_key
         self.model = model or self.DEFAULT_MODEL
-        self.base_url = base_url or self.DEFAULT_BASE_URL
         self.timeout = timeout if timeout is not None else Config.AI_REQUEST_TIMEOUT
         try:
-            import openai
+            import google.generativeai as genai
         except ImportError:
             raise ProviderError(
-                "The 'openai' package is not installed. Run: pip install openai",
+                "The 'google-generativeai' package is not installed. Run: pip install google-generativeai",
                 "dependency",
             )
-        self._openai = openai
-        self.client = openai.OpenAI(api_key=api_key, base_url=self.base_url, timeout=self.timeout)
+        self._genai = genai
+        genai.configure(api_key=api_key)
+        self.client = genai.GenerativeModel(
+            model_name=self.model,
+            system_instruction="You are Code Doctor AI.",
+        )
 
     def _normalize_model(self) -> str:
         return self.model
 
     def complete(self, system: str, user_message: str, max_tokens: int = 4000) -> str:
         def _call():
-            return self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_message},
-                ],
-                max_tokens=max_tokens,
-                timeout=self.timeout,
+            return self.client.generate_content(
+                user_message,
+                generation_config=self._genai.types.GenerationConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=0.2,
+                ),
+                stream=False,
             )
         try:
             response = _retry_with_backoff(_call, self._classify)
-            return response.choices[0].message.content
+            if response.text:
+                return response.text
+            return ""
         except RateLimitedError:
             raise
         except Exception as e:
@@ -399,17 +402,19 @@ class OpenCodeZenProvider(AIProvider):
     def _classify(e: Exception) -> ProviderError:
         msg = str(e)
         code = getattr(getattr(e, "status_code", None), "code", None) or getattr(e, "status_code", None)
-        if code == 401 or "authentication" in msg.lower() or "invalid api key" in msg.lower():
+        if code == 400 and ("api key" in msg.lower() or "invalid" in msg.lower()):
             return AuthenticationError()
-        if code == 402 or "insufficient_quota" in msg.lower() or "billing" in msg.lower() or "credit" in msg.lower():
+        if code == 401 or "api_key_invalid" in msg.lower() or "permission_denied" in msg.lower() or "unauthenticated" in msg.lower():
+            return AuthenticationError()
+        if code == 402 or "quota" in msg.lower() or "billing" in msg.lower() or "exceeded" in msg.lower():
             return QuotaExceededError()
-        if code == 429 or "rate limit" in msg.lower():
+        if code == 429 or "rate" in msg.lower() or "resource_exhausted" in msg.lower():
             return RateLimitedError(retry_after=_retry_after_seconds(e))
-        if code == 404 or ("model" in msg.lower() and ("not found" in msg.lower() or "does not exist" in msg.lower() or "not_found" in msg.lower())):
+        if code == 404 or ("model" in msg.lower() and ("not found" in msg.lower() or "does not exist" in msg.lower())):
             return ModelUnavailableError()
         if code == 403:
-            return ProviderError("AI provider rejected the request (403). Check permissions.", "provider")
-        return ProviderError(f"OpenCode Zen API error: {msg}", "provider")
+            return ProviderError("Gemini API rejected the request (403). Check permissions.", "provider")
+        return ProviderError(f"Gemini API error: {msg}", "provider")
 
 
 class OpenAIProvider(AIProvider):
@@ -489,30 +494,27 @@ def classify_provider_error(e: Exception) -> Tuple[str, str]:
     return f"AI provider error: {str(e)}", "provider"
 
 
-def create_ai_provider(provider_name: str, api_key: str, model: str, extra_key: str = "", extra_model: str = "", zen_key: str = "", zen_model: str = "", zen_base_url: str = "") -> AIProvider:
+def create_ai_provider(provider_name: str, api_key: str, model: str, extra_key: str = "", extra_model: str = "", gemini_key: str = "", gemini_model: str = "") -> AIProvider:
     """Factory. Falls back between providers when 'auto' is used."""
     name = (provider_name or "auto").lower()
     if name == "auto":
-        if zen_key:
-            return OpenCodeZenProvider(zen_key, zen_model or model, zen_base_url)
+        if gemini_key:
+            return GeminiProvider(gemini_key, gemini_model or model)
         if api_key:
             return AnthropicProvider(api_key, model)
         if extra_key:
             return OpenAIProvider(extra_key, extra_model or model or "gpt-4o")
         raise AuthenticationError(
-            "No AI API key configured. Set OPENCODE_ZEN_API_KEY, AI_API_KEY or "
-            "OPENAI_API_KEY in your .env or Streamlit secrets."
+            "No AI API key configured. Set GEMINI_API_KEY (recommended), "
+            "AI_API_KEY or OPENAI_API_KEY in your .env or Streamlit secrets."
         )
-    if name == "opencode_zen":
-        key = api_key or extra_key or zen_key
-        chosen_model = zen_model or extra_model or model or OpenCodeZenProvider.DEFAULT_MODEL
-        return OpenCodeZenProvider(key, chosen_model, zen_base_url)
+    if name == "gemini":
+        key = gemini_key or api_key or extra_key
+        return GeminiProvider(key, gemini_model or model or GeminiProvider.DEFAULT_MODEL)
     if name == "anthropic":
         key = api_key or extra_key
         return AnthropicProvider(key, model)
     if name == "openai":
         key = api_key or extra_key
-        # Use the OpenAI-specific model when provided; fall back to the generic
-        # model only if the OpenAI one is empty. This honors OPENAI_MODEL from .env.
         return OpenAIProvider(key, extra_model or model or "gpt-4o")
     raise ProviderError(f"Unknown AI provider: {provider_name}")

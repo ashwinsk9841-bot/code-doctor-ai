@@ -5,7 +5,7 @@
 - **Python 3.10 or higher** (developed and tested against 3.14)
 - **pip** (Python package manager)
 - **API Key** (optional) from any of:
-  - [OpenCode Zen](https://opencode.ai/auth) (recommended — **free**, e.g. Big Pickle)
+  - [Google AI Studio](https://aistudio.google.com/apikey) (Gemini — recommended)
   - [Anthropic Console](https://console.anthropic.com/)
   - [OpenAI Platform](https://platform.openai.com/)
 
@@ -31,11 +31,11 @@ cp .env.example .env
 
 Edit `.env` and add your API key:
 
-**For OpenCode Zen (free, default):**
+**For Google Gemini (default):**
 ```env
-AI_PROVIDER=opencode_zen
-OPENCODE_ZEN_API_KEY=sk-zen-your-key-here
-OPENCODE_ZEN_MODEL=big-pickle
+AI_PROVIDER=gemini
+GEMINI_API_KEY=AIza-your-key-here
+GEMINI_MODEL=gemini-3.5-flash-lite
 ```
 
 **For Anthropic (Claude):**
@@ -152,7 +152,7 @@ CODE-DOCTOR-AI/
 ├── .env                    # Environment variables (create this)
 ├── .env.example           # Example environment file
 ├── core/                   # Core modules
-│   ├── ai_provider.py     # AI provider interface (Anthropic/OpenAI)
+│   ├── ai_provider.py     # AI provider interface (Gemini/Anthropic/OpenAI)
 │   ├── analyzer.py        # Analysis pipeline orchestrator
 │   ├── code_parser.py     # File discovery + language parsing
 │   ├── dependency_scanner.py # Manifest/package scanning
@@ -173,12 +173,12 @@ CODE-DOCTOR-AI/
 
 ## API Key Setup
 
-### Getting an OpenCode Zen API Key (free, recommended)
+### Getting a Google Gemini API Key (recommended)
 
-1. Go to [opencode.ai/auth](https://opencode.ai/auth)
-2. Sign up or log in
-3. Copy your API key (no credit card required; Big Pickle is free)
-4. Add to `.env` as `OPENCODE_ZEN_API_KEY`
+1. Go to [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+2. Sign up or log in with your Google account
+3. Create and copy your API key (starts with `AIza`)
+4. Add to `.env` as `GEMINI_API_KEY`
 
 ### Getting an Anthropic API Key
 
@@ -206,10 +206,10 @@ CODE-DOCTOR-AI/
    and paste TOML with your provider key:
 
 ```toml
-# OpenCode Zen provider (free, recommended)
-AI_PROVIDER = "opencode_zen"
-OPENCODE_ZEN_API_KEY = "sk-zen-your-key-here"
-# OPENCODE_ZEN_MODEL = "big-pickle"
+# Google Gemini provider (default)
+AI_PROVIDER = "gemini"
+GEMINI_API_KEY = "AIza-your-key-here"
+# GEMINI_MODEL = "gemini-3.5-flash-lite"
 ```
 
 ```toml
@@ -227,7 +227,7 @@ OPENAI_MODEL = "gpt-4o"
 ```
 
 > **Only one provider key is required.** If you set more than one, set
-> `AI_PROVIDER = "auto"` to let the app pick (OpenCode Zen first, then
+> `AI_PROVIDER = "auto"` to let the app pick (Gemini first, then
 > Anthropic, then OpenAI). The app reads these secrets on
 > startup via `Config.load_from_secrets()`. Without any key, the deployed app
 > still runs static/security/dependency scans.

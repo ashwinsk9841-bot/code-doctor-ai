@@ -8,7 +8,7 @@ An AI-powered **GitHub repository debugging assistant**. Paste a GitHub repo URL
 - 🔍 **Multi-Language Parsing** — Python (AST), JavaScript/TypeScript (regex), Java, C/C++, Go, Rust, PHP, Ruby, SQL, HTML/CSS, manifests and more.
 - 🔒 **Security Scanning** — 20+ patterns: hardcoded secrets (always **masked**), eval/exec, unsafe deserialization, SQL injection, XSS, path traversal, shell usage. Secret values never leak into evidence or reports.
 - 📦 **Dependency Scanning** — parses `requirements.txt`, `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`; flags unpinned, EOL, and non-reproducible references (no fabricated CVEs).
-- 🤖 **AI Analysis** — optional AI analysis for deep issue understanding and fix generation using a free **OpenCode Zen** model by default (Big Pickle, no paid credits), with Anthropic or OpenAI as alternatives.
+- 🤖 **AI Analysis** — optional AI analysis for deep issue understanding and fix generation using **Google Gemini** by default (`gemini-3.5-flash-lite`), with Anthropic or OpenAI as alternatives.
 - 🔧 **Automatic Fixes** — deterministic secret→env-variable replacement first, AI-driven fallback, with backup files and syntax validation.
 - 🧪 **Test Generation & Execution** — generates tests and runs them safely in a subprocess with timeout (pytest/jest/vitest/mocha/go/cargo/junit/phpunit).
 - ✅ **Fix Verification** — PASS / FAIL / BLOCKED / NOT_VERIFIED outcomes based on syntax checks and test runs.
@@ -20,7 +20,7 @@ An AI-powered **GitHub repository debugging assistant**. Paste a GitHub repo URL
 ### Prerequisites
 
 - **Python 3.10+** (developed and tested against 3.14)
-- API key from [OpenCode Zen](https://opencode.ai/auth) *(free, no credit card — recommended)*, or [Anthropic](https://console.anthropic.com/) / [OpenAI](https://platform.openai.com/) *(optional — the app degrades gracefully to static/security/dependency scanning without one)*
+- API key from [Google AI Studio](https://aistudio.google.com/apikey) *(free — recommended)*, or [Anthropic](https://console.anthropic.com/) / [OpenAI](https://platform.openai.com/) *(optional — the app degrades gracefully to static/security/dependency scanning without one)*
 
 ### Installation
 
@@ -39,9 +39,10 @@ pip install -r requirements.txt
 
 Create a `.env` file in the project root (see `.env.example`):
 ```env
-# Default: free OpenCode Zen (Big Pickle) — get a key at https://opencode.ai/auth
-AI_PROVIDER=opencode_zen
-OPENCODE_ZEN_API_KEY=your_opencode_zen_api_key_here
+# Default: Google Gemini (gemini-3.5-flash-lite) — get a key at https://aistudio.google.com/apikey
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_google_gemini_api_key_here
+# GEMINI_MODEL=gemini-3.5-flash-lite
 
 # Or for Anthropic
 # AI_PROVIDER=anthropic
@@ -67,15 +68,15 @@ The app will open in your browser at `http://localhost:8501`.
 
 ```toml
 # Example secrets (replace with your real keys)
-AI_PROVIDER = "opencode_zen"      # "opencode_zen", "anthropic", "openai", or "auto"
+AI_PROVIDER = "gemini"      # "gemini", "anthropic", "openai", or "auto"
 
-# Free OpenCode Zen (Big Pickle) — get a key at https://opencode.ai/auth
-OPENCODE_ZEN_API_KEY = "sk-zen-..."
-# OPENCODE_ZEN_MODEL = "big-pickle"
+# Default: Google Gemini (gemini-3.5-flash-lite) — get a key at https://aistudio.google.com/apikey
+GEMINI_API_KEY = "AIza-..."
+# GEMINI_MODEL = "gemini-3.5-flash-lite"
 
-# Use these keys instead if you prefer paid providers:
-# AI_API_KEY = "sk-ant-..."          # Anthropic
-# OPENAI_API_KEY = "sk-..."          # OpenAI
+# Use these keys instead if you prefer the paid providers:
+# AI_API_KEY = "sk-ant-..."            # Anthropic
+# OPENAI_API_KEY = "sk-..."            # OpenAI
 # AI_MODEL = "claude-sonnet-4-20250514"
 # OPENAI_MODEL = "gpt-4o"
 ```
@@ -99,8 +100,8 @@ Edit `config.py` or use environment variables:
 
 ```python
 # AI Provider Settings
-AI_PROVIDER=opencode_zen        # 'opencode_zen', 'anthropic', 'openai', or 'auto'
-OPENCODE_ZEN_MODEL=big-pickle   # free default model
+AI_PROVIDER=gemini        # 'gemini', 'anthropic', 'openai', or 'auto'
+GEMINI_MODEL=gemini-3.5-flash-lite   # default model
 # AI_MODEL=claude-sonnet-4-20250514
 # OPENAI_MODEL=gpt-4o
 
@@ -132,7 +133,7 @@ core/
   security_scanner.py  Security & secret scanning (masked output)
   dependency_scanner.py Manifest parsing
   analyzer.py          Orchestrates the full analysis pipeline
-  ai_provider.py       OpenCode Zen / Anthropic / OpenAI adapters + error classification
+  ai_provider.py       Gemini / Anthropic / OpenAI adapters + error classification
   fixer.py             Deterministic + AI fixes with backups
   test_generator.py    Test generation
   test_runner.py       Safe subprocess test execution

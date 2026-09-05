@@ -36,6 +36,7 @@ class CodeFixer:
     def apply_fix_to_repo(self, repo_root: Path, issue: Dict[str, Any],
                           files_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         """Apply a single deterministic fix for the given issue."""
+        repo_root = repo_root.resolve()
         rel_path = issue.get("file")
         if not rel_path:
             return {"applied": False, "error": "Issue has no associated file."}
@@ -70,6 +71,7 @@ class CodeFixer:
         pressure. ``files_map`` is the parsed file records; the list returned matches
         the input ``issues`` order with an ``applied``/``error`` result per issue.
         """
+        repo_root = repo_root.resolve()
         results: List[Dict[str, Any]] = []
         security_batches: List[Dict[str, Any]] = []
         ai_batches: Dict[str, List[Dict[str, Any]]] = {}  # file -> issues
@@ -217,6 +219,7 @@ class CodeFixer:
         }
 
     def _backup(self, repo_root: Path, absolute: Path) -> Path:
+        repo_root = repo_root.resolve()
         backup_dir = repo_root / ".codedoctor_backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         rel = absolute.relative_to(repo_root).as_posix().replace("/", "__")

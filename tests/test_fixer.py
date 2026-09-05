@@ -1,4 +1,6 @@
 """Tests for fixer module"""
+from pathlib import Path
+
 import pytest
 from unittest.mock import Mock
 from core.fixer import CodeFixer
@@ -110,3 +112,76 @@ def test_apply_many_deterministic_security_per_issue(tmp_path):
     new = f.read_text()
     assert "sk-1234567890abcdefghij" not in new
     assert "os.environ" in new
+
+
+def test_apply_fix_repo_root_in_raw_short_name_form():
+    """Regression: repo_root may be in raw (8.3 short-name) form, e.g.
+    ``C:\\Users\\ASHWIN~1\\...`` from ``tempfile.gettempdir()``, while the
+    target file is resolved to the long-name form (``ASHWIN S\\...``).
+    ``relative_to`` is lexical, so the fixer must normalise repo_root before
+    comparing. Previously this crashed Apply Fix with
+    ``ValueError: ... is not in the subpath of ...`` for e.g. SETUP.md."""
+    import tempfile
+    import uuid
+
+    repo_root = Path(tempfile.gettempdir()) / f"codedoctor_fixer_raw_{uuid.uuid4().hex}"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    try:
+        target = repo_root / "SETUP.md"
+        target.write_text('API_KEY = "sk-1234567890abcdefghij"\n')
+
+        issue = {"file": "SETUP.md", "line": 1,
+                 "title": "Hardcoded credential", "source": "security"}
+        fixer = CodeFixer(None)
+        result = fixer.apply_fix_to_repo(repo_root, issue,
+                                         {"SETUP.md": {"path": "SETUP.md"}})
+        assert result["applied"] is True
+        assert "os.environ" in target.read_text()
+        backup = (repo_root / ".codedoctor_backups" / "SETUP.md.bak")
+        assert backup.exists()
+    finally:
+        import shutil
+        shutil.rmtree(repo_root, ignore_errors=True)
+
+
+def test_apply_many_fixes_repo_root_in_raw_short_name_form():
+    """Same raw-root regression for the batched apply path (reaches _backup via
+    _ai_fix_many)."""
+    import tempfile
+    import uuid
+    from unittest.mock import Mock
+
+    repo_root = Path(tempfile.gettempdir()) / f"codedoctor_fixer_raw_many_{uuid.uuid4().hex}"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    try:
+        target = repo_root / "app.py"
+        target.write_text("def f():\n    return 0\n")
+
+        ai = Mock()
+        ai.fix_code.return_value = "import os\n\ndef f():\n    return 42\n"
+        fixer = CodeFixer(ai)
+        issues = [{"issue_id": "A", "file": "app.py", "line": 2, "language": "python",
+                   "source": "parser", "fixable": True, "title": "dead return"}]
+        results = fixer.apply_many_fixes_to_repo(repo_root, issues,
+                                                 {"app.py": {"path": "app.py"}})
+        assert results[0]["applied"] is True
+        assert "return 42" in target.read_text()
+        assert (repo_root / ".codedoctor_backups" / "app.py.bak").exists()
+    finally:
+        import shutil
+        shutil.rmtree(repo_root, ignore_errors=True)
+
+
+def test_apply_fix_accepts_absolute_file_path_inside_repo(tmp_path):
+    """An absolute issue file path that resides inside the repo must still be
+    mapped safely (normalised against repo_root) rather than rejected."""
+    f = tmp_path / "config.py"
+    f.write_text('TOKEN = "sk-1234567890abcdefghij"\nprint(TOKEN)')
+
+    issue = {"file": str(f.resolve()), "line": 1,
+             "title": "Hardcoded TOKEN", "source": "security"}
+    fixer = CodeFixer(None)
+    result = fixer.apply_fix_to_repo(tmp_path, issue,
+                                     {"config.py": {"path": "config.py"}})
+    assert result["applied"] is True
+    assert "os.environ" in f.read_text()

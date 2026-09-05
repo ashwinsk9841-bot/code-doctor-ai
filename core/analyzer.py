@@ -95,7 +95,7 @@ class CodeAnalyzer:
 
         Sends the sample files in a SINGLE batched request (``ai_provider.analyze_many``)
         rather than one request per file, which dramatically reduces API/rate-limit
-        pressure when using the free OpenCode Zen model. If the provider is
+        pressure. If the provider is
         temporarily rate-limited, we gracefully fall back (returning whatever was
         already collected and a clear ``error:rate_limit`` status) instead of hanging.
         """

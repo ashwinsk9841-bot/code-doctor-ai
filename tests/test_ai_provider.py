@@ -1,10 +1,10 @@
-"""Tests for the AI provider factory and OpenAI provider configuration."""
+"""Tests for the AI provider factory and provider configuration."""
 import pytest
 
 from core.ai_provider import (
     OpenAIProvider,
     AnthropicProvider,
-    OpenCodeZenProvider,
+    GeminiProvider,
     create_ai_provider,
     AuthenticationError,
     ModelUnavailableError,
@@ -114,37 +114,36 @@ def test_model_unavailable_error_kind():
 
 
 # ---------------------------------------------------------------------------
-# OpenCode Zen provider
+# Gemini provider
 # ---------------------------------------------------------------------------
 
-def test_create_opencode_zen_provider_defaults():
-    """OpenCode Zen provider defaults to the free big-pickle model and Zen base URL."""
-    provider = OpenCodeZenProvider("sk-zen-test-key")
-    assert isinstance(provider, OpenCodeZenProvider)
-    assert provider.provider_name == "opencode_zen"
-    assert provider.model == "big-pickle"
-    assert provider.base_url == "https://opencode.ai/zen/v1"
+def test_create_gemini_provider_defaults():
+    """Gemini provider defaults to gemini-3.5-flash-lite model."""
+    provider = GeminiProvider("sk-gemini-test-key")
+    assert isinstance(provider, GeminiProvider)
+    assert provider.provider_name == "gemini"
+    assert provider.model == "gemini-3.5-flash-lite"
 
 
-def test_create_opencode_zen_provider_custom():
-    provider = OpenCodeZenProvider("sk-zen-test-key", model="mimo-v2.5-free")
-    assert provider.model == "mimo-v2.5-free"
+def test_create_gemini_provider_custom():
+    provider = GeminiProvider("sk-gemini-test-key", model="gemini-2.5-flash")
+    assert provider.model == "gemini-2.5-flash"
 
 
-def test_create_opencode_zen_missing_key_raises():
+def test_create_gemini_missing_key_raises():
     import core.ai_provider as ap
     with pytest.raises(ap.AuthenticationError):
-        ap.OpenCodeZenProvider("")
+        ap.GeminiProvider("")
 
 
-def test_create_opencode_zen_requires_package(monkeypatch):
-    """Missing openai package -> ProviderError, not a raw crash."""
+def test_create_gemini_requires_package(monkeypatch):
+    """Missing google-generativeai package -> ProviderError, not a raw crash."""
     import builtins
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name == "openai":
-            raise ImportError("No module named 'openai'")
+        if name == "google" or name == "google.generativeai":
+            raise ImportError("No module named 'google'")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
@@ -153,80 +152,65 @@ def test_create_opencode_zen_requires_package(monkeypatch):
     importlib.reload(ap)
 
     with pytest.raises(ap.ProviderError):
-        ap.OpenCodeZenProvider("sk-zen-test-key")
+        ap.GeminiProvider("sk-gemini-test-key")
 
     monkeypatch.undo()
 
 
-def test_factory_opencode_zen_via_zen_key():
-    """Factory returns an OpenCodeZenProvider when zen_key is provided."""
+def test_factory_gemini_via_key():
+    """Factory returns a GeminiProvider when gemini_key is provided."""
     import core.ai_provider as ap
     provider = ap.create_ai_provider(
-        "opencode_zen",
+        "gemini",
         "", "", "",
-        zen_key="sk-zen-test-key",
-        zen_model="",
+        gemini_key="sk-gemini-test-key",
     )
-    assert isinstance(provider, ap.OpenCodeZenProvider)
-    assert provider.model == "big-pickle"
+    assert isinstance(provider, ap.GeminiProvider)
+    assert provider.model == "gemini-3.5-flash-lite"
 
 
-def test_factory_opencode_zen_uses_zen_model():
+def test_factory_gemini_uses_model():
     import core.ai_provider as ap
     provider = ap.create_ai_provider(
-        "opencode_zen",
+        "gemini",
         "", "", "",
-        zen_key="sk-zen-test-key",
-        zen_model="mimo-v2.5-free",
+        gemini_key="sk-gemini-test-key",
+        gemini_model="gemini-2.5-flash",
     )
-    assert isinstance(provider, ap.OpenCodeZenProvider)
-    assert provider.model == "mimo-v2.5-free"
+    assert isinstance(provider, ap.GeminiProvider)
+    assert provider.model == "gemini-2.5-flash"
 
 
-def test_factory_opencode_zen_fallback_to_generic_model():
-    import core.ai_provider as ap
-    provider = ap.create_ai_provider(
-        "opencode_zen",
-        "", "gpt-4-turbo", "",
-        zen_key="sk-zen-test-key",
-        zen_model="",
-    )
-    assert isinstance(provider, ap.OpenCodeZenProvider)
-    assert provider.model == "gpt-4-turbo"
-
-
-def test_factory_auto_prefers_opencode_zen():
-    """With 'auto', the free OpenCode Zen key is chosen first."""
+def test_factory_auto_prefers_gemini():
+    """With 'auto', the Gemini key is chosen first."""
     import core.ai_provider as ap
     provider = ap.create_ai_provider(
         "auto",
         "sk-ant-test", "claude-x",
         extra_key="sk-openai-test",
-        zen_key="sk-zen-test-key",
+        gemini_key="sk-gemini-test-key",
     )
-    assert isinstance(provider, ap.OpenCodeZenProvider)
-    assert provider.model == "claude-x"
+    assert isinstance(provider, ap.GeminiProvider)
 
 
-def test_classify_opencode_zen_model_not_found():
+def test_classify_gemini_rate_limit():
     import core.ai_provider as ap
-    # A nonexistent free model id should map to model_unavailable.
     class Fake:
-        status_code = 404
+        status_code = 429
         def __str__(self):
-            return "Model 'not-a-real-model' not found"
-    err = ap.OpenCodeZenProvider._classify(Fake())
-    assert err.kind == "model_unavailable"
-    assert isinstance(err, ap.ModelUnavailableError)
+            return "429 Too Many Requests"
+    err = ap.GeminiProvider._classify(Fake())
+    assert err.kind == "rate_limit"
+    assert isinstance(err, ap.RateLimitedError)
 
 
-def test_classify_opencode_zen_authentication():
+def test_classify_gemini_authentication():
     import core.ai_provider as ap
     class Fake:
         status_code = 401
         def __str__(self):
-            return "Authentication failed"
-    err = ap.OpenCodeZenProvider._classify(Fake())
+            return "Permission denied"
+    err = ap.GeminiProvider._classify(Fake())
     assert err.kind == "authentication"
     assert isinstance(err, ap.AuthenticationError)
 
@@ -339,7 +323,7 @@ def test_retry_after_seconds_absent_returns_none():
     assert ap._retry_after_seconds(Fake()) is None
 
 
-def test_classify_opencode_zen_rate_limit_carries_retry_after():
+def test_classify_gemini_rate_limit_carries_retry_after():
     """429 classification attaches the parsed Retry-After to the error."""
     import core.ai_provider as ap
 
@@ -352,7 +336,7 @@ def test_classify_opencode_zen_rate_limit_carries_retry_after():
         def __str__(self):
             return "429 Too Many Requests"
 
-    err = ap.OpenCodeZenProvider._classify(Fake())
+    err = ap.GeminiProvider._classify(Fake())
     assert isinstance(err, ap.RateLimitedError)
     assert err.retry_after == 12.0
 
@@ -366,11 +350,11 @@ def test_analyze_many_attributes_files_and_dedupes():
     from core.ai_provider import AIProvider
 
     class P(AIProvider):
-        provider_name = "opencode_zen"
+        provider_name = "gemini"
         def __init__(self):
             self.calls = 0
         def _normalize_model(self):
-            return "big-pickle"
+            return "gemini-3.5-flash-lite"
         def complete(self, system, user_message, max_tokens=4000):
             self.calls += 1
             return ('{"issues": ['

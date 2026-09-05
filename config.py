@@ -24,24 +24,23 @@ class Config:
     """Application configuration"""
 
     # AI Provider Settings
-    AI_PROVIDER = _env("AI_PROVIDER", "opencode_zen")
+    AI_PROVIDER = _env("AI_PROVIDER", "gemini")
     AI_API_KEY = _env("AI_API_KEY", "")
     AI_MODEL = _env("AI_MODEL", "")
+
+    # Google Gemini Settings (default provider)
+    GEMINI_API_KEY = _env("GEMINI_API_KEY", "")
+    GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
     # OpenAI Settings (alternative)
     OPENAI_API_KEY = _env("OPENAI_API_KEY", "")
     OPENAI_MODEL = _env("OPENAI_MODEL", "gpt-4o")
 
-    # OpenCode Zen Settings (free models like Big Pickle, default provider)
-    OPENCODE_ZEN_API_KEY = _env("OPENCODE_ZEN_API_KEY", "")
-    OPENCODE_ZEN_MODEL = _env("OPENCODE_ZEN_MODEL", "big-pickle")
-    OPENCODE_ZEN_BASE_URL = _env("OPENCODE_ZEN_BASE_URL", "https://opencode.ai/zen/v1")
-
     # Default models per provider (used when AI_MODEL / OPENAI_MODEL are empty)
     _DEFAULT_MODELS = {
         "anthropic": "claude-sonnet-4-20250514",
         "openai": "gpt-4o",
-        "opencode_zen": "big-pickle",
+        "gemini": "gemini-3.5-flash-lite",
     }
 
     # AI request timeouts & rate-limit retry
@@ -76,11 +75,10 @@ class Config:
             "AI_PROVIDER": "AI_PROVIDER",
             "AI_API_KEY": "AI_API_KEY",
             "AI_MODEL": "AI_MODEL",
+            "GEMINI_API_KEY": "GEMINI_API_KEY",
+            "GEMINI_MODEL": "GEMINI_MODEL",
             "OPENAI_API_KEY": "OPENAI_API_KEY",
             "OPENAI_MODEL": "OPENAI_MODEL",
-            "OPENCODE_ZEN_API_KEY": "OPENCODE_ZEN_API_KEY",
-            "OPENCODE_ZEN_MODEL": "OPENCODE_ZEN_MODEL",
-            "OPENCODE_ZEN_BASE_URL": "OPENCODE_ZEN_BASE_URL",
         }
         for secret_key, attr in secret_map.items():
             try:
@@ -95,11 +93,11 @@ class Config:
     def effective_model(cls, provider: str = "") -> str:
         """Return the model that will actually be used for *provider*."""
         provider = (provider or cls.AI_PROVIDER).lower()
+        if provider == "gemini":
+            return (cls.GEMINI_MODEL or cls.AI_MODEL
+                    or cls._DEFAULT_MODELS.get("gemini", "gemini-3.5-flash-lite"))
         if provider == "openai":
             return cls.OPENAI_MODEL or cls.AI_MODEL or cls._DEFAULT_MODELS.get("openai", "gpt-4o")
-        if provider == "opencode_zen":
-            return (cls.OPENCODE_ZEN_MODEL or cls.AI_MODEL
-                    or cls._DEFAULT_MODELS.get("opencode_zen", "big-pickle"))
         return cls.AI_MODEL or cls._DEFAULT_MODELS.get("anthropic", "claude-sonnet-4-20250514")
 
     # Application Settings
@@ -196,15 +194,15 @@ class Config:
         """Validate configuration.  Returns (is_valid, message)."""
         cls.load_from_secrets()
 
-        if cls.AI_PROVIDER not in ("anthropic", "openai", "opencode_zen", "auto"):
+        if cls.AI_PROVIDER not in ("anthropic", "openai", "gemini", "auto"):
             return False, (
                 f"Unknown AI_PROVIDER '{cls.AI_PROVIDER}'. "
-                "Supported values: anthropic, openai, opencode_zen, auto."
+                "Supported values: gemini, anthropic, openai, auto."
             )
 
         provider = cls.AI_PROVIDER.lower()
 
-        if provider in ("opencode_zen", "auto") and cls.OPENCODE_ZEN_API_KEY:
+        if provider in ("gemini", "auto") and cls.GEMINI_API_KEY:
             return True, "Configuration valid."
 
         if provider in ("anthropic", "auto") and cls.AI_API_KEY:
@@ -215,9 +213,9 @@ class Config:
 
         # No usable key found
         return False, (
-            "No API key configured. Add **OPENCODE_ZEN_API_KEY** (recommended, "
-            "free), **AI_API_KEY** (Anthropic), or **OPENAI_API_KEY** (OpenAI) "
-            "to your Streamlit secrets or to your local `.env` file."
+            "No API key configured. Add **GEMINI_API_KEY** (recommended), "
+            "**AI_API_KEY** (Anthropic), or **OPENAI_API_KEY** (OpenAI) to "
+            "your Streamlit secrets or to your local `.env` file."
         )
 
     @classmethod
